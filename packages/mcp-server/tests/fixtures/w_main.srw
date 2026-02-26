@@ -12,11 +12,11 @@ private integer ii_count = 0
 protected string is_title
 end variables
 
-event open;
+event open()
 SetTitle(is_title)
 end event
 
-event close;
+event close()
 end event
 
 public function integer of_get_count()

@@ -3,6 +3,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { PBCache } from './cache.js';
 import { registerExploreTools } from './tools/explore.js';
+import { registerAnalyzeTools } from './tools/analyze.js';
+import { registerModifyTools } from './tools/modify.js';
+import { registerBuildTools } from './tools/build.js';
 
 const PB_SOLUTION_PATH = process.env['PB_SOLUTION_PATH'] ?? '';
 
@@ -29,6 +32,9 @@ if (PB_SOLUTION_PATH) {
 
 // Register all exploration tools.
 registerExploreTools(server, cache);
+registerAnalyzeTools(server, cache);
+registerModifyTools(server, cache);
+registerBuildTools(server, cache);
 
 // Connect to stdio transport and start.
 const transport = new StdioServerTransport();
