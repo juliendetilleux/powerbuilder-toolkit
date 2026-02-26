@@ -1,0 +1,8 @@
+$PBExportHeader$d_items.srd
+datawindow(units=0 timer_interval=0 color=1073741824 processing=0 HTMLDW=no print.paper.source=15 print.orientation=0 print.margin.left=113 print.margin.right=113 print.margin.top=113 print.margin.bottom=113 print.columns=1 print.color=1 print.prompt=no print.buttons=no print.preview.buttons=no print.preview.zoom=100)
+table(column=(type=char(50) updatewhereclause=yes name=item_code dbname="item_code" )
+column=(type=char(100) updatewhereclause=yes name=item_desc dbname="item_desc" )
+column=(type=number updatewhereclause=yes name=item_price dbname="item_price" )
+retrieve="SELECT item_code, item_desc, item_price FROM items WHERE status = :as_status" )
+text(band=header alignment="0" text="Code" name=t_1 x=0 y=0 height=68 width=300 html.valueishtml=0 )
+column(band=detail alignment="0" name=item_code x=0 y=0 height=68 width=300 html.valueishtml=0 )
