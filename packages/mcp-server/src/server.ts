@@ -6,6 +6,7 @@ import { registerExploreTools } from './tools/explore.js';
 import { registerAnalyzeTools } from './tools/analyze.js';
 import { registerModifyTools } from './tools/modify.js';
 import { registerBuildTools } from './tools/build.js';
+import { registerVisualTools } from './tools/visual.js';
 
 const PB_SOLUTION_PATH = process.env['PB_SOLUTION_PATH'] ?? '';
 
@@ -35,6 +36,7 @@ registerExploreTools(server, cache);
 registerAnalyzeTools(server, cache);
 registerModifyTools(server, cache);
 registerBuildTools(server, cache);
+registerVisualTools(server, cache);
 
 // Connect to stdio transport and start.
 const transport = new StdioServerTransport();
