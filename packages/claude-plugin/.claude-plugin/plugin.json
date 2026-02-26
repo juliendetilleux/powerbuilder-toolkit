@@ -1,0 +1,7 @@
+{
+  "name": "powerbuilder-dev",
+  "description": "Plugin Claude Code pour le developpement PowerBuilder 2025 — skills, hooks et outils specialises",
+  "version": "0.1.0",
+  "author": { "name": "JUDE" },
+  "keywords": ["powerbuilder", "pb", "powerscript", "erp", "datawindow"]
+}

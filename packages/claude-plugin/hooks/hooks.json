@@ -1,0 +1,17 @@
+{
+  "description": "PowerBuilder development hooks — syntax validation after edits to .sr* files",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const p=process.env.TOOL_INPUT_FILE_PATH||''; if(p.match(/\\.sr[wdumafsjpq]$/i)){process.stdout.write('PB file modified: '+p+'\\nRemember to compile with pb_compile after all modifications are done.')}\"",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
