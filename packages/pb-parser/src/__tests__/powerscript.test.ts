@@ -5,6 +5,7 @@ import {
   parseEvents,
   parseInstanceVariables,
   parseAncestor,
+  parseMenuItems,
 } from '../powerscript.js';
 
 // ---------------------------------------------------------------------------
@@ -539,5 +540,115 @@ global type w_child from w_main
     const result = parseAncestor(source);
     expect(result?.name).toBe('w_main');
     expect(result?.ancestor).toBe('w_base');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseFunctions — global functions (.srf)
+// ---------------------------------------------------------------------------
+describe('parseFunctions — global functions (.srf)', () => {
+  it('parses global function declaration', () => {
+    const source = [
+      '$PBExportHeader$gf_round.srf',
+      'global type gf_round from function_object',
+      'end type',
+      '',
+      'forward prototypes',
+      'global function string gf_round (string as_input)',
+      'end prototypes',
+      '',
+      'global function string gf_round (string as_input);',
+      'decimal ld_result',
+      'ld_result = round(dec(as_input), 2)',
+      'return string(ld_result)',
+      'end function',
+    ].join('\n');
+
+    const functions = parseFunctions(source);
+    expect(functions.length).toBeGreaterThanOrEqual(1);
+
+    const fn = functions.find((f) => f.name === 'gf_round');
+    expect(fn).toBeDefined();
+    expect(fn!.returnType).toBe('string');
+    expect(fn!.params.length).toBe(1);
+    expect(fn!.params[0]!.name).toBe('as_input');
+  });
+
+  it('parses global subroutine declaration', () => {
+    const source = [
+      'forward prototypes',
+      'global subroutine gf_log (string as_msg)',
+      'end prototypes',
+      '',
+      'global subroutine gf_log (string as_msg);',
+      '// log it',
+      'end subroutine',
+    ].join('\n');
+
+    const functions = parseFunctions(source);
+    const fn = functions.find((f) => f.name === 'gf_log');
+    expect(fn).toBeDefined();
+    expect(fn!.returnType).toBe('void');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseMenuItems — .srm menu parsing
+// ---------------------------------------------------------------------------
+describe('parseMenuItems — .srm menu parsing', () => {
+  it('extracts menu items from forward block', () => {
+    const source = [
+      '$PBExportHeader$m_main.srm',
+      'forward',
+      'global type m_main from menu',
+      'end type',
+      'type m_file from menu within m_main',
+      'end type',
+      'type m_edit from menu within m_main',
+      'end type',
+      'type m_help from menu within m_main',
+      'end type',
+      'end forward',
+    ].join('\n');
+
+    const items = parseMenuItems(source);
+    expect(items.length).toBe(3);
+    expect(items[0]!.name).toBe('m_file');
+    expect(items[0]!.parent).toBe('m_main');
+    expect(items[1]!.name).toBe('m_edit');
+    expect(items[2]!.name).toBe('m_help');
+  });
+
+  it('handles nested menu items', () => {
+    const source = [
+      'forward',
+      'global type m_main from menu',
+      'end type',
+      'type m_file from menu within m_main',
+      'end type',
+      'type m_file_new from menu within m_file',
+      'end type',
+      'type m_file_open from menu within m_file',
+      'end type',
+      'end forward',
+    ].join('\n');
+
+    const items = parseMenuItems(source);
+    expect(items.length).toBe(3);
+    // m_file_new and m_file_open have parent m_file.
+    const subItems = items.filter((i) => i.parent === 'm_file');
+    expect(subItems.length).toBe(2);
+  });
+
+  it('returns empty for non-menu files', () => {
+    const source = [
+      'forward',
+      'global type w_main from window',
+      'end type',
+      'end forward',
+    ].join('\n');
+
+    const items = parseMenuItems(source);
+    expect(items.length).toBe(0);
   });
 });

@@ -41,7 +41,7 @@ function makeWindowTemplate(name: string, ancestor: string): string {
     `call super::destroy`,
     `end on`,
     ``,
-  ].join('\n');
+  ].join('\r\n');
 }
 
 function makeUserObjectTemplate(name: string, ancestor: string): string {
@@ -67,7 +67,7 @@ function makeUserObjectTemplate(name: string, ancestor: string): string {
     `call super::destroy`,
     `end on`,
     ``,
-  ].join('\n');
+  ].join('\r\n');
 }
 
 function makeMenuTemplate(name: string, ancestor: string): string {
@@ -83,7 +83,7 @@ function makeMenuTemplate(name: string, ancestor: string): string {
     `global type ${name} from ${ancestor}`,
     `end type`,
     ``,
-  ].join('\n');
+  ].join('\r\n');
 }
 
 const EXTENSION_MAP: Record<'window' | 'userobject' | 'menu', string> = {

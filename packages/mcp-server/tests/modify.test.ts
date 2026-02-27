@@ -317,4 +317,44 @@ describe('pb_create_object — template generation', () => {
 
     expect(existsSync(libDir)).toBe(true);
   });
+
+  it('created files use CRLF line endings', async () => {
+    const tmp = await makeTempSolution({});
+    const cache = new PBCache();
+    await cache.initialize(tmp);
+
+    const name = 'w_crlf';
+    const filePath = nodePath.join(tmp, `${name}.srw`);
+
+    // Build a template the same way the tool does and write it.
+    const template = [
+      `$PBExportHeader$${name}.srw`,
+      `forward`,
+      `global type ${name} from w_master`,
+      `end type`,
+      `end forward`,
+      ``,
+      `global type ${name} from w_master`,
+      `end type`,
+      ``,
+      `on ${name}.create`,
+      `call super::create`,
+      `TriggerEvent( this, "constructor" )`,
+      `end on`,
+      ``,
+      `on ${name}.destroy`,
+      `TriggerEvent( this, "destructor" )`,
+      `call super::destroy`,
+      `end on`,
+      ``,
+    ].join('\r\n');
+
+    await writeFile(filePath, template, 'utf-8');
+    const content = await readFile(filePath, { encoding: 'utf-8' });
+
+    // Every newline should be CRLF.
+    expect(content).toContain('\r\n');
+    const stripped = content.replace(/\r\n/g, '');
+    expect(stripped).not.toContain('\n');
+  });
 });

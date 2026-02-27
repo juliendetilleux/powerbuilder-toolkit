@@ -157,6 +157,165 @@ export function parseDataWindowColumns(source: string): PBDataWindowColumn[] {
 }
 
 // ---------------------------------------------------------------------------
+// Layout extraction (visual positions for automation)
+// ---------------------------------------------------------------------------
+
+/** A visual column in the detail band of a DataWindow. */
+export interface DwLayoutColumn {
+  name: string;
+  id: number;
+  type: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  tabsequence: number;
+  visible: boolean;
+  tag: string;
+  editLimit: number;
+  editCase: string;
+  dddwName: string;
+}
+
+/** A text label in the detail band. */
+export interface DwLayoutLabel {
+  name: string;
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Complete visual layout of a DataWindow's detail band. */
+export interface DwLayout {
+  detailHeight: number;
+  columns: DwLayoutColumn[];
+  labels: DwLayoutLabel[];
+}
+
+/**
+ * Extract an integer attribute value from a block string.
+ * Returns the default if not found.
+ */
+function extractIntAttr(block: string, key: string, defaultVal = 0): number {
+  const re = new RegExp(`\\b${key}="?(\\d+)"?`, 'i');
+  const m = re.exec(block);
+  return m ? parseInt(m[1]!, 10) : defaultVal;
+}
+
+/**
+ * Parse the visual layout of a DataWindow's detail band.
+ *
+ * Extracts column positions (PBU coordinates), text labels, and detail
+ * band dimensions from the .srd source. These are the visual objects
+ * placed in the detail band — NOT the table column definitions.
+ *
+ * PB .srd format for visual objects:
+ *   column(band=detail id=1 ... x="841" y="44" height="64" width="855" ... name=itcode ...)
+ *   text(band=detail ... text="Code" ... x="686" y="44" ... name=itcode_t ...)
+ */
+/**
+ * Extract all paren-balanced blocks matching `prefix(band=detail ...)` from
+ * the source. PB attributes may contain nested parentheses (e.g.
+ * `color="0~tif(itactiv='N', rgb(128,128,128),rgb(0,0,0))"`) so a simple
+ * `[^)]*` regex is not sufficient — we need balanced-paren extraction.
+ */
+function extractDetailBlocks(source: string, prefix: string): string[] {
+  const blocks: string[] = [];
+  const re = new RegExp(`\\b${prefix}\\s*\\(band=detail\\b`, 'gi');
+  let m: RegExpExecArray | null;
+
+  while ((m = re.exec(source)) !== null) {
+    // Position of the opening paren.
+    const parenStart = source.indexOf('(', m.index);
+    if (parenStart === -1) continue;
+
+    let depth = 0;
+    let end = parenStart;
+    for (let i = parenStart; i < source.length; i++) {
+      if (source[i] === '(') depth++;
+      else if (source[i] === ')') {
+        depth--;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+
+    // Inner content without the outer parens.
+    blocks.push(source.slice(parenStart + 1, end));
+  }
+
+  return blocks;
+}
+
+export function parseDwLayout(source: string): DwLayout {
+  // Extract detail band height.
+  const detailMatch = /\bdetail\s*\(\s*height=(\d+)/i.exec(source);
+  const detailHeight = detailMatch ? parseInt(detailMatch[1]!, 10) : 0;
+
+  const columns: DwLayoutColumn[] = [];
+  const labels: DwLayoutLabel[] = [];
+
+  // Extract visual column(...) blocks in the detail band using balanced parens.
+  // These appear AFTER the table(...) block and contain x=, y=, name= etc.
+  for (const block of extractDetailBlocks(source, 'column')) {
+    const name = extractAttrUnquoted(block, 'name');
+    if (!name) continue;
+
+    columns.push({
+      name,
+      id: extractIntAttr(block, 'id'),
+      type: '', // type comes from table block, not visual block
+      x: extractIntAttr(block, 'x'),
+      y: extractIntAttr(block, 'y'),
+      width: extractIntAttr(block, 'width'),
+      height: extractIntAttr(block, 'height'),
+      tabsequence: extractIntAttr(block, 'tabsequence', 32766),
+      visible: extractAttrQuoted(block, 'visible') !== '0',
+      tag: unescapePBString(extractAttrQuoted(block, 'tag') ?? ''),
+      editLimit: extractIntAttr(block, 'edit.limit'),
+      editCase: extractAttrUnquoted(block, 'edit.case') ?? 'any',
+      dddwName: extractAttrUnquoted(block, 'dddw.name') ?? '',
+    });
+  }
+
+  // Enrich columns with type from table block.
+  const tableBlock = extractTableBlock(source);
+  if (tableBlock) {
+    const colBlocks = extractColumnBlocks(tableBlock);
+    const typeMap = new Map<string, string>();
+    for (const cb of colBlocks) {
+      const cname = extractAttrUnquoted(cb, 'name');
+      const ctype = extractAttrUnquoted(cb, 'type');
+      if (cname && ctype) typeMap.set(cname, ctype);
+    }
+    for (const col of columns) {
+      col.type = typeMap.get(col.name) ?? '';
+    }
+  }
+
+  // Extract text(...) blocks in the detail band using balanced parens.
+  for (const block of extractDetailBlocks(source, 'text')) {
+    const name = extractAttrUnquoted(block, 'name') ?? '';
+    const text = unescapePBString(extractAttrQuoted(block, 'text') ?? '');
+
+    labels.push({
+      name,
+      text,
+      x: extractIntAttr(block, 'x'),
+      y: extractIntAttr(block, 'y'),
+      width: extractIntAttr(block, 'width'),
+      height: extractIntAttr(block, 'height'),
+    });
+  }
+
+  return { detailHeight, columns, labels };
+}
+
+// ---------------------------------------------------------------------------
 // Argument extraction
 // ---------------------------------------------------------------------------
 

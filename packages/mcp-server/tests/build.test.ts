@@ -12,7 +12,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as nodePath from 'node:path';
 import { writeFile, mkdir, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { validateSyntax } from '../src/tools/build.js';
+import { validateSyntax, parseBuildOutput, decodeOutput } from '../src/tools/build.js';
 
 // ---------------------------------------------------------------------------
 // Setup
@@ -364,6 +364,120 @@ describe('validateSyntax — edge cases', () => {
     const unclosed = issues.find((i) => i.message.includes('function'));
     expect(unclosed).toBeDefined();
     expect(unclosed!.line).toBe(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decodeOutput — UTF-16LE decoding
+// ---------------------------------------------------------------------------
+
+describe('decodeOutput — UTF-16LE decoding', () => {
+  it('returns plain ASCII text unchanged', () => {
+    const text = 'Hello World\r\nLine 2';
+    expect(decodeOutput(text)).toBe(text);
+  });
+
+  it('decodes UTF-16LE encoded text (with null bytes)', () => {
+    // Simulate UTF-16LE: each ASCII char followed by a null byte.
+    const original = 'Error: test failed';
+    const utf16le = Buffer.from(original, 'utf16le');
+    // Reading with 'binary' encoding produces a string where each byte is a char code.
+    const binaryStr = utf16le.toString('binary');
+    // binaryStr will contain null bytes between characters.
+    expect(binaryStr.includes('\x00')).toBe(true);
+    const decoded = decodeOutput(binaryStr);
+    expect(decoded).toBe(original);
+  });
+
+  it('decodes UTF-16LE multi-line output', () => {
+    const original = 'Warning: W0001 something\r\nError: E0002 bad stuff\r\nDone.';
+    const utf16le = Buffer.from(original, 'utf16le');
+    const binaryStr = utf16le.toString('binary');
+    const decoded = decodeOutput(binaryStr);
+    expect(decoded).toBe(original);
+  });
+
+  it('handles empty string', () => {
+    expect(decodeOutput('')).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseBuildOutput — error/warning extraction
+// ---------------------------------------------------------------------------
+
+describe('parseBuildOutput — error and warning extraction', () => {
+  it('parses errors from plain text output', () => {
+    const stdout = 'Compiling...\r\nError: C0001 Undefined variable at myfile.sru(42)\r\nDone.';
+    const { errors, warnings } = parseBuildOutput(stdout, '');
+    expect(errors.length).toBe(1);
+    expect(errors[0]!.message).toContain('C0001');
+    expect(warnings.length).toBe(0);
+  });
+
+  it('parses warnings from plain text output', () => {
+    const stdout = 'Compiling...\r\nWarning: W0023 Variable not used\r\nDone.';
+    const { errors, warnings } = parseBuildOutput(stdout, '');
+    expect(errors.length).toBe(0);
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]!.message).toContain('W0023');
+  });
+
+  it('parses mixed errors and warnings', () => {
+    const stdout = [
+      'Building project...',
+      'Warning: W0001 unused variable',
+      'Warning: W0002 another warning',
+      'Error: E0001 something broke at foo.sru(10)',
+      'Done.',
+    ].join('\r\n');
+    const { errors, warnings } = parseBuildOutput(stdout, '');
+    expect(errors.length).toBe(1);
+    expect(warnings.length).toBe(2);
+  });
+
+  it('extracts file and line from error location', () => {
+    const stdout = 'Error: E0001 Undefined variable at mylib/myfile.sru(123)';
+    const { errors } = parseBuildOutput(stdout, '');
+    expect(errors.length).toBe(1);
+    expect(errors[0]!.file).toBe('mylib/myfile.sru');
+    expect(errors[0]!.line).toBe(123);
+  });
+
+  it('handles errors without file location', () => {
+    const stdout = 'Error: General compilation failure';
+    const { errors } = parseBuildOutput(stdout, '');
+    expect(errors.length).toBe(1);
+    expect(errors[0]!.file).toBeUndefined();
+    expect(errors[0]!.line).toBeUndefined();
+  });
+
+  it('returns empty arrays for clean output', () => {
+    const stdout = 'Building...\r\nCompilation successful.\r\nDone.';
+    const { errors, warnings } = parseBuildOutput(stdout, '');
+    expect(errors).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  it('handles stderr in addition to stdout', () => {
+    const { errors } = parseBuildOutput('', 'Error: from stderr');
+    expect(errors.length).toBe(1);
+    expect(errors[0]!.message).toContain('from stderr');
+  });
+
+  it('works correctly with decoded UTF-16LE output', () => {
+    // Simulate the full pipeline: UTF-16LE -> binary -> decode -> parse
+    const original = 'Warning: W0001 test warning\r\nError: E0001 test error at file.sru(5)';
+    const utf16le = Buffer.from(original, 'utf16le');
+    const binaryStr = utf16le.toString('binary');
+    const decoded = decodeOutput(binaryStr);
+    const { errors, warnings } = parseBuildOutput(decoded, '');
+    expect(errors.length).toBe(1);
+    expect(errors[0]!.message).toContain('E0001');
+    expect(errors[0]!.file).toBe('file.sru');
+    expect(errors[0]!.line).toBe(5);
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]!.message).toContain('W0001');
   });
 });
 

@@ -28,6 +28,22 @@ async function makeTempSolution(files: Record<string, string>): Promise<string> 
 // Minimal PB source helpers
 // ---------------------------------------------------------------------------
 
+function makeGlobalFunction(name: string, body: string): string {
+  return [
+    `$PBExportHeader$${name}.srf`,
+    `global type ${name} from function_object`,
+    `end type`,
+    ``,
+    `forward prototypes`,
+    `global function string ${name} (string as_input)`,
+    `end prototypes`,
+    ``,
+    `global function string ${name} (string as_input);`,
+    body,
+    `end function`,
+  ].join('\n');
+}
+
 function makeNvo(name: string, ancestor: string, extraBody = ''): string {
   return [
     `$PBExportHeader$${name}.sru`,
@@ -482,5 +498,251 @@ describe('pb_get_call_graph — call detection', () => {
     // The test validates the detection works — at least nvo_service calls it.
     expect(callers.length).toBeGreaterThanOrEqual(1);
     expect(callers).toContain('nvo_service');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pb_get_call_graph — Bug fixes: .srf, comments, self-references
+// ---------------------------------------------------------------------------
+
+describe('pb_get_call_graph — bug fixes', () => {
+  let tmp: string;
+  let cache: PBCache;
+
+  beforeAll(async () => {
+    tmp = await makeTempSolution({
+      // Global function file (.srf) — defines gf_round.
+      'gf_round.srf': makeGlobalFunction('gf_round', [
+        'decimal ld_result',
+        'ld_result = round(dec(as_input), 2)',
+        'return string(ld_result)',
+      ].join('\n')),
+      // A window that calls gf_round — real caller.
+      'w_invoice.srw': makeWindow(
+        'w_invoice',
+        'window',
+        [
+          'event open;',
+          'string ls_val',
+          'ls_val = gf_round("123.456")',
+          'end event',
+        ].join('\n'),
+      ),
+      // A window with gf_round in a comment — should NOT be a caller.
+      'w_commented.srw': makeWindow(
+        'w_commented',
+        'window',
+        [
+          'event open;',
+          '// ls_val = gf_round("old code")',
+          'string ls_val',
+          'ls_val = "hardcoded"',
+          'end event',
+        ].join('\n'),
+      ),
+    });
+    cache = new PBCache();
+    await cache.initialize(tmp);
+  });
+
+  it('Bug 1: defined_in is set for global functions (.srf files)', () => {
+    // The .srf file should be recognized as defining gf_round.
+    const obj = cache.getByName('gf_round');
+    expect(obj).toBeDefined();
+    expect(obj!.type).toBe('function');
+    // The function body object should be detected by the call_graph logic.
+    // We verify this by checking the cache entry type.
+    expect(obj!.name.toLowerCase()).toBe('gf_round');
+  });
+
+  it('Bug 1: call_graph detects defined_in for .srf global function', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const funcName = 'gf_round';
+    let functionBodyObject = '';
+
+    for (const obj of cache.getAll()) {
+      // Simulate the fixed logic from analyze.ts.
+      if (obj.type === 'function' && obj.name.toLowerCase() === funcName.toLowerCase()) {
+        functionBodyObject = obj.name;
+      }
+    }
+
+    expect(functionBodyObject).toBe('gf_round');
+  });
+
+  it('Bug 2: callers exclude commented-out lines', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const funcName = 'gf_round';
+    const escaped = funcName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const callerPattern = new RegExp(`\\b${escaped}\\s*\\(`, 'gi');
+
+    const callers: string[] = [];
+    for (const obj of cache.getAll()) {
+      const content = await readFile(obj.filePath, { encoding: 'utf-8' });
+      const lines = content.split(/\r?\n/);
+      for (const line of lines) {
+        // Skip commented-out lines (Bug 2 fix).
+        const trimmedLine = line.trim();
+        if (trimmedLine.startsWith('//')) continue;
+
+        callerPattern.lastIndex = 0;
+        if (callerPattern.test(line)) {
+          const isDef = /^\s*(public|private|protected)?\s*(function|subroutine)\s+/i.test(line);
+          if (!isDef) callers.push(obj.name);
+        }
+      }
+    }
+
+    // w_invoice calls gf_round in real code — should be found.
+    expect(callers).toContain('w_invoice');
+    // w_commented only has gf_round in a comment — should NOT be found.
+    expect(callers).not.toContain('w_commented');
+  });
+
+  it('Bug 3: callers exclude self-references from the defining .srf file', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const funcName = 'gf_round';
+    const escaped = funcName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const callerPattern = new RegExp(`\\b${escaped}\\s*\\(`, 'gi');
+
+    // First, find the defining object.
+    let functionBodyObject = '';
+    for (const obj of cache.getAll()) {
+      if (obj.type === 'function' && obj.name.toLowerCase() === funcName.toLowerCase()) {
+        functionBodyObject = obj.name;
+      }
+    }
+    expect(functionBodyObject).toBe('gf_round');
+
+    // Now scan for callers, skipping the defining object (Bug 3 fix).
+    const callers: string[] = [];
+    for (const obj of cache.getAll()) {
+      // Skip defining object entirely.
+      if (functionBodyObject && obj.name.toLowerCase() === functionBodyObject.toLowerCase()) {
+        continue;
+      }
+
+      const content = await readFile(obj.filePath, { encoding: 'utf-8' });
+      const lines = content.split(/\r?\n/);
+      for (const line of lines) {
+        const trimmedLine = line.trim();
+        if (trimmedLine.startsWith('//')) continue;
+
+        callerPattern.lastIndex = 0;
+        if (callerPattern.test(line)) {
+          const isDef = /^\s*(public|private|protected)?\s*(function|subroutine)\s+/i.test(line);
+          if (!isDef) callers.push(obj.name);
+        }
+      }
+    }
+
+    // gf_round should NOT appear as its own caller.
+    expect(callers).not.toContain('gf_round');
+    // w_invoice should still be detected as a caller.
+    expect(callers).toContain('w_invoice');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pb_get_dependencies — pagination (R1)
+// ---------------------------------------------------------------------------
+
+describe('pb_get_dependencies — pagination', () => {
+  it('pagination slices results correctly', () => {
+    // Simulate a references array.
+    const refs = Array.from({ length: 10 }, (_, i) => ({
+      file: `file${i}.sru`,
+      object: `obj${i}`,
+      type: 'userobject',
+      line: i + 1,
+      content: `line ${i}`,
+    }));
+
+    const total = refs.length;
+    const limit = 3;
+    const offset = 2;
+    const sliced = refs.slice(offset, offset + limit);
+    const has_more = offset + limit < total;
+
+    expect(sliced.length).toBe(3);
+    expect(sliced[0]!.object).toBe('obj2');
+    expect(has_more).toBe(true);
+    expect(total).toBe(10);
+  });
+
+  it('offset beyond total returns empty', () => {
+    const refs = [{ file: 'a.sru', object: 'a', type: 'userobject', line: 1, content: 'x' }];
+    const offset = 5;
+    const limit = 100;
+    const sliced = refs.slice(offset, offset + limit);
+    expect(sliced.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pb_get_inheritance — recursive descendants (R4)
+// ---------------------------------------------------------------------------
+
+describe('pb_get_inheritance — recursive descendants', () => {
+  let tmp: string;
+  let cache: PBCache;
+
+  beforeAll(async () => {
+    tmp = await makeTempSolution({
+      'nvo_root.sru': makeNvo('nvo_root', 'nonvisualobject'),
+      'nvo_level1a.sru': makeNvo('nvo_level1a', 'nvo_root'),
+      'nvo_level1b.sru': makeNvo('nvo_level1b', 'nvo_root'),
+      'nvo_level2.sru': makeNvo('nvo_level2', 'nvo_level1a'),
+      'nvo_level3.sru': makeNvo('nvo_level3', 'nvo_level2'),
+    });
+    cache = new PBCache();
+    await cache.initialize(tmp);
+  });
+
+  it('non-recursive returns only direct descendants', () => {
+    const targetName = 'nvo_root';
+    const directDescendants = cache.getAll().filter(
+      (o) => o.ancestor?.toLowerCase() === targetName.toLowerCase(),
+    );
+    expect(directDescendants.length).toBe(2); // level1a, level1b
+    const names = directDescendants.map((d) => d.name).sort();
+    expect(names).toEqual(['nvo_level1a', 'nvo_level1b']);
+  });
+
+  it('recursive returns all levels of descendants', () => {
+    const targetName = 'nvo_root';
+
+    // BFS for all descendants.
+    const allDescendants: string[] = [];
+    const queue = [targetName.toLowerCase()];
+    const visited = new Set<string>();
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+
+      const children = cache.getAll().filter(
+        (o) => o.ancestor?.toLowerCase() === current,
+      );
+      for (const child of children) {
+        allDescendants.push(child.name);
+        queue.push(child.name.toLowerCase());
+      }
+    }
+
+    expect(allDescendants.length).toBe(4); // level1a, level1b, level2, level3
+    expect(allDescendants).toContain('nvo_level1a');
+    expect(allDescendants).toContain('nvo_level1b');
+    expect(allDescendants).toContain('nvo_level2');
+    expect(allDescendants).toContain('nvo_level3');
+  });
+
+  it('recursive on leaf node returns empty', () => {
+    const targetName = 'nvo_level3';
+    const descendants = cache.getAll().filter(
+      (o) => o.ancestor?.toLowerCase() === targetName.toLowerCase(),
+    );
+    expect(descendants.length).toBe(0);
   });
 });

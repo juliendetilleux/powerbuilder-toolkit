@@ -33,6 +33,27 @@ interface BuildWarning {
 }
 
 // ---------------------------------------------------------------------------
+// UTF-16LE decoding helper
+// ---------------------------------------------------------------------------
+
+/**
+ * PBAutoBuild250.exe outputs UTF-16LE encoded text (null bytes between
+ * characters). When execFileAsync reads with `encoding: 'binary'`, the raw
+ * bytes are preserved but regex matching fails because of the embedded nulls.
+ *
+ * This function detects UTF-16LE by checking for null bytes and decodes
+ * accordingly.
+ */
+function decodeOutput(raw: string): string {
+  if (raw.includes('\x00')) {
+    // The string was read in 'binary' encoding — each byte is a char code.
+    // Convert to a Buffer and then decode as UTF-16LE.
+    return Buffer.from(raw, 'binary').toString('utf16le');
+  }
+  return raw;
+}
+
+// ---------------------------------------------------------------------------
 // Build output parser
 // ---------------------------------------------------------------------------
 
@@ -100,14 +121,14 @@ interface BlockDescriptor {
 const BLOCK_DESCRIPTORS: BlockDescriptor[] = [
   // ---- PowerBuilder structural / export-format blocks ----
 
-  // "forward … end forward"
+  // "forward ... end forward"
   {
     label: 'forward',
     opener: /^forward\s*$/i,
     closer: /^end\s+forward\s*$/i,
   },
 
-  // "type variables / shared variables / global variables … end variables"
+  // "type variables / shared variables / global variables ... end variables"
   // MUST come before the generic 'type' descriptor so "type variables" is not
   // misidentified as a 'type' block opener.
   {
@@ -116,14 +137,14 @@ const BLOCK_DESCRIPTORS: BlockDescriptor[] = [
     closer: /^end\s+variables\s*$/i,
   },
 
-  // "type prototypes … end prototypes"
+  // "type prototypes ... end prototypes"
   {
     label: 'prototypes',
-    opener: /^(type\s+)?prototypes\s*$/i,
+    opener: /^(forward\s+|type\s+)?prototypes\s*$/i,
     closer: /^end\s+prototypes\s*$/i,
   },
 
-  // "global type X from Y [ within Z ] … end type"
+  // "global type X from Y [ within Z ] ... end type"
   // The negative-lookahead ensures we do NOT match "type variables" here.
   {
     label: 'type',
@@ -133,21 +154,21 @@ const BLOCK_DESCRIPTORS: BlockDescriptor[] = [
 
   // ---- Script-level blocks ----
 
-  // "public|private|protected function|subroutine name(…) … end function|subroutine"
+  // "public|private|protected function|subroutine name(...) ... end function|subroutine"
   {
     label: 'function',
-    opener: /^(public\s+|private\s+|protected\s+)?(function|subroutine)\s+\w/i,
+    opener: /^(public\s+|private\s+|protected\s+|global\s+)?(function|subroutine)\s+\w/i,
     closer: /^end\s+(function|subroutine)\s*$/i,
   },
 
-  // "event name; … end event"  or  "event name(…) … end event"
+  // "event name; ... end event"  or  "event name(...) ... end event"
   {
     label: 'event',
     opener: /^event\s+\w+(\s*;|\s*\()/i,
     closer: /^end\s+event\s*$/i,
   },
 
-  // "on objectname.eventname … end on"
+  // "on objectname.eventname ... end on"
   {
     label: 'on',
     opener: /^on\s+\w+\.\w+/i,
@@ -168,41 +189,114 @@ const BLOCK_DESCRIPTORS: BlockDescriptor[] = [
     closer: /^end\s+if\s*$/i,
   },
   {
+    label: 'choose',
+    opener: /^choose\s+case\b/i,
+    closer: /^end\s+choose\s*$/i,
+  },
+  {
     label: 'for',
     opener: /^for\s+\w+\s*=/i,
     closer: /^next\s*$/i,
   },
   {
     label: 'do',
-    opener: /^do\s*$/i,
+    opener: /^do(\s+(while|until)\s+.+)?\s*$/i,
     closer: /^loop\b/i,
   },
 ];
 
 function validateSyntax(content: string): { valid: boolean; issues: SyntaxIssue[] } {
   const issues: SyntaxIssue[] = [];
-  const lines = content.split(/\r?\n/);
+  const rawLines = content.split(/\r?\n/);
   const stack: BlockTracker[] = [];
 
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i] ?? '';
-    const trimmed = raw.trim();
-    const lineNum = i + 1;
+  // ---------------------------------------------------------------------------
+  // Pre-processing step: join continuation lines (lines ending with "&").
+  // PowerBuilder uses "&" at end-of-line to indicate the statement continues
+  // on the next line.  We merge them into single logical lines, preserving
+  // the original line numbers so error messages stay meaningful.
+  // ---------------------------------------------------------------------------
+  interface LogicalLine {
+    text: string;
+    lineNum: number; // 1-based line number of the *first* physical line
+  }
 
+  const logicalLines: LogicalLine[] = [];
+  let pendingText = '';
+  let pendingStart = -1;
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const raw = rawLines[i] ?? '';
+    const trimmed = raw.trim();
+
+    if (pendingStart === -1) {
+      // Not in a continuation — start a new logical line.
+      if (trimmed.endsWith('&')) {
+        pendingText = trimmed.slice(0, -1).trimEnd();
+        pendingStart = i + 1; // 1-based
+      } else {
+        logicalLines.push({ text: trimmed, lineNum: i + 1 });
+      }
+    } else {
+      // Continuing a previous line.
+      if (trimmed.endsWith('&')) {
+        pendingText += ' ' + trimmed.slice(0, -1).trimEnd();
+      } else {
+        pendingText += ' ' + trimmed;
+        logicalLines.push({ text: pendingText.trim(), lineNum: pendingStart });
+        pendingText = '';
+        pendingStart = -1;
+      }
+    }
+  }
+  // Flush any remaining continuation (shouldn't happen in well-formed files).
+  if (pendingStart !== -1) {
+    logicalLines.push({ text: pendingText.trim(), lineNum: pendingStart });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helper: strip a trailing line comment (// ...) from a line.
+  // Respects string literals: does not strip // inside "..." or '...'.
+  // ---------------------------------------------------------------------------
+  function stripTrailingComment(line: string): string {
+    let inSingle = false;
+    let inDouble = false;
+    for (let j = 0; j < line.length; j++) {
+      const ch = line[j];
+      if (ch === "'" && !inDouble) {
+        inSingle = !inSingle;
+      } else if (ch === '"' && !inSingle) {
+        inDouble = !inDouble;
+      } else if (ch === '/' && line[j + 1] === '/' && !inSingle && !inDouble) {
+        return line.slice(0, j).trimEnd();
+      }
+    }
+    return line;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helper: process a single logical line against block descriptors.
+  // ---------------------------------------------------------------------------
+  function processLine(trimmed: string, lineNum: number): void {
     // Skip empty lines and comments.
     if (trimmed === '' || trimmed.startsWith('//') || trimmed.startsWith('/*')) {
-      continue;
+      return;
     }
 
-    // Skip "else" / "else if" / "catch" / "finally" — these are continuations, not openers.
+    // Skip "else" / "else if" / "elseif" / "catch" / "finally" — continuations, not openers.
     if (/^else\b/i.test(trimmed) || /^catch\b/i.test(trimmed) || /^finally\b/i.test(trimmed)) {
-      continue;
+      return;
     }
+
+    // Strip trailing comments for block matching.
+    // We use the stripped version for pattern matching, but keep the original
+    // for inline-code extraction (where ";" may appear before a comment).
+    const stripped = stripTrailingComment(trimmed).trimEnd();
 
     // Check closers first (they take priority over openers for lines that could be both).
     let closerMatched = false;
     for (const desc of BLOCK_DESCRIPTORS) {
-      if (desc.closer.test(trimmed)) {
+      if (desc.closer.test(stripped)) {
         closerMatched = true;
         if (stack.length === 0) {
           issues.push({
@@ -224,15 +318,70 @@ function validateSyntax(content: string): { valid: boolean; issues: SyntaxIssue[
       }
     }
 
-    if (closerMatched) continue;
+    if (closerMatched) return;
+
+    // Determine context from the current stack.
+    const insidePrototypesOrForward = stack.some(
+      (b) => b.keyword === 'prototypes' || b.keyword === 'forward',
+    );
+    const insideType = stack.some((b) => b.keyword === 'type');
 
     // Check openers.
     for (const desc of BLOCK_DESCRIPTORS) {
-      if (desc.opener.test(trimmed)) {
+      if (desc.opener.test(stripped)) {
+        // Skip function/subroutine/event openers inside prototypes/forward blocks
+        // (these are prototype declarations, not function bodies).
+        if (
+          insidePrototypesOrForward &&
+          (desc.label === 'function' || desc.label === 'event')
+        ) {
+          break;
+        }
+
+        // Skip event declarations inside type blocks.
+        // In PB export format, type blocks for child controls list event
+        // declarations (e.g., "event create ( )") which are NOT event bodies.
+        if (insideType && desc.label === 'event') {
+          break;
+        }
+
         stack.push({ keyword: desc.label, line: lineNum });
+
+        // Handle inline code after ";" in function/event/subroutine openers.
+        // PB exports: "event name;code" or "public function x();code"
+        // The code after ";" is the first line of the body and may itself
+        // contain block openers (e.g., "event open;if x then").
+        // Multiple statements may be separated by ";":
+        //   "event constructor;call super::constructor;if x then"
+        if (desc.label === 'function' || desc.label === 'event') {
+          const semiIdx = trimmed.indexOf(';');
+          if (semiIdx !== -1) {
+            const afterSemi = trimmed.slice(semiIdx + 1).trim();
+            if (afterSemi !== '' && !afterSemi.startsWith('//')) {
+              // Find the last semicolon-separated segment that could be a
+              // block opener.  Process each segment; non-matching segments
+              // are harmlessly skipped by processLine.
+              const segments = afterSemi.split(';');
+              for (const seg of segments) {
+                const s = seg.trim();
+                if (s !== '' && !s.startsWith('//')) {
+                  processLine(s, lineNum);
+                }
+              }
+            }
+          }
+        }
+
         break; // Only the first matching opener applies.
       }
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Main loop: process each logical line.
+  // ---------------------------------------------------------------------------
+  for (const ll of logicalLines) {
+    processLine(ll.text, ll.lineNum);
   }
 
   // Any unclosed blocks remaining on the stack are errors.
@@ -279,10 +428,16 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
           .describe(
             'After compilation, copy all generated .pbd files to the exe directory (default: false).',
           ),
+        build_args: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'Additional raw arguments to pass to PBAutoBuild250.exe (e.g. ["/x", "32", "/rt", "25.0.0.3726", "/pd", "nyyy..."]). These are appended after the default /pbc /d /o flags.',
+          ),
       },
       annotations: { readOnlyHint: false },
     },
-    async ({ project_path, output_exe, copy_pbds = false }) => {
+    async ({ project_path, output_exe, copy_pbds = false, build_args }) => {
       const resolvedProject =
         project_path ?? process.env['PB_PROJECT_PATH'] ?? '';
       const resolvedExe =
@@ -317,6 +472,12 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
         };
       }
 
+      // Build the arguments array: base flags + any additional build_args.
+      const args = ['/pbc', '/d', resolvedProject, '/o', resolvedExe];
+      if (build_args && build_args.length > 0) {
+        args.push(...build_args);
+      }
+
       const startTime = Date.now();
       let stdout = '';
       let stderr = '';
@@ -325,17 +486,19 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
       try {
         const result = await execFileAsync(
           PB_AUTOBUILD_PATH,
-          ['/pbc', '/d', resolvedProject, '/o', resolvedExe],
-          { timeout: 300_000 },
+          args,
+          { timeout: 300_000, encoding: 'binary' },
         );
-        stdout = result.stdout ?? '';
-        stderr = result.stderr ?? '';
+        stdout = decodeOutput(result.stdout ?? '');
+        stderr = decodeOutput(result.stderr ?? '');
       } catch (err: unknown) {
         success = false;
         if (err && typeof err === 'object') {
           const execErr = err as { stdout?: string; stderr?: string; message?: string };
-          stdout = execErr.stdout ?? '';
-          stderr = execErr.stderr ?? (execErr.message ?? String(err));
+          stdout = decodeOutput(execErr.stdout ?? '');
+          stderr = decodeOutput(
+            execErr.stderr ?? (execErr.message ?? String(err)),
+          );
         } else {
           stderr = String(err);
         }
@@ -440,4 +603,4 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
 }
 
 // Export for testing.
-export { validateSyntax };
+export { validateSyntax, parseBuildOutput, decodeOutput };

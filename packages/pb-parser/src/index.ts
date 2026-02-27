@@ -21,15 +21,18 @@ export {
   parseInstanceVariables,
   parseAncestor,
   parseParams,
+  parseMenuItems,
 } from './powerscript.js';
-export type { ParsedAncestor } from './powerscript.js';
+export type { ParsedAncestor, PBMenuItem } from './powerscript.js';
 
 // DataWindow parser
 export {
   parseDataWindowSQL,
   parseDataWindowColumns,
   parseDataWindowArguments,
+  parseDwLayout,
 } from './datawindow.js';
+export type { DwLayout, DwLayoutColumn, DwLayoutLabel } from './datawindow.js';
 
 // Project utilities
 export {

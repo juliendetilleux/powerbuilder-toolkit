@@ -52,10 +52,14 @@ export function registerAnalyzeTools(server: McpServer, cache: PBCache): void {
         'Resolves the full inheritance chain for a PowerBuilder object: all ancestors above it and all descendants that inherit from it.',
       inputSchema: {
         object_name: z.string().describe('Name of the PowerBuilder object (e.g. w_main)'),
+        recursive: z
+          .boolean()
+          .optional()
+          .describe('When true, return all descendants recursively, not just direct children (default: false)'),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ object_name }) => {
+    async ({ object_name, recursive = false }) => {
       const obj = cache.getByName(object_name);
       if (!obj) {
         return {
@@ -99,16 +103,45 @@ export function registerAnalyzeTools(server: McpServer, cache: PBCache): void {
         currentAncestorName = ancestorObj.ancestor;
       }
 
-      // Find all descendants: objects whose ancestor matches (case-insensitive).
-      const targetName = obj.name.toLowerCase();
-      const descendants: AncestorEntry[] = cache
-        .getAll()
-        .filter((o) => o.ancestor?.toLowerCase() === targetName)
-        .map((o) => ({
-          name: o.name,
-          type: o.type,
-          library: o.library,
-        }));
+      // Find descendants: objects whose ancestor matches (case-insensitive).
+      let descendants: AncestorEntry[];
+
+      if (recursive) {
+        // BFS to collect all levels.
+        descendants = [];
+        const queue = [obj.name.toLowerCase()];
+        const visitedDesc = new Set<string>();
+
+        while (queue.length > 0) {
+          const current = queue.shift()!;
+          if (visitedDesc.has(current)) continue;
+          visitedDesc.add(current);
+
+          const children = cache
+            .getAll()
+            .filter((o) => o.ancestor?.toLowerCase() === current);
+
+          for (const child of children) {
+            descendants.push({
+              name: child.name,
+              type: child.type,
+              library: child.library,
+            });
+            queue.push(child.name.toLowerCase());
+          }
+        }
+      } else {
+        // Direct children only (existing behavior).
+        const targetName = obj.name.toLowerCase();
+        descendants = cache
+          .getAll()
+          .filter((o) => o.ancestor?.toLowerCase() === targetName)
+          .map((o) => ({
+            name: o.name,
+            type: o.type,
+            library: o.library,
+          }));
+      }
 
       const result = {
         object: {
@@ -138,10 +171,23 @@ export function registerAnalyzeTools(server: McpServer, cache: PBCache): void {
         'Finds all source files that reference the given object name, showing where it is used across the codebase.',
       inputSchema: {
         object_name: z.string().describe('Name of the PowerBuilder object to search for'),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(5000)
+          .optional()
+          .describe('Maximum number of references to return (default: 100, max: 5000)'),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('Number of references to skip (default: 0)'),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ object_name }) => {
+    async ({ object_name, limit = 100, offset = 0 }) => {
       // Build a word-boundary regex for the object name.
       // PowerScript is case-insensitive but we do a case-insensitive match.
       const escaped = object_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -176,14 +222,21 @@ export function registerAnalyzeTools(server: McpServer, cache: PBCache): void {
         }
       }
 
+      const total = referencedBy.length;
+      const effectiveLimit = Math.min(limit, 5000);
+      const sliced = referencedBy.slice(offset, offset + effectiveLimit);
+
       return {
         content: [
           {
             type: 'text' as const,
             text: toText({
               object_name,
-              references_count: referencedBy.length,
-              referenced_by: referencedBy,
+              total,
+              limit: effectiveLimit,
+              offset,
+              has_more: offset + effectiveLimit < total,
+              referenced_by: sliced,
             }),
           },
         ],
@@ -308,9 +361,31 @@ export function registerAnalyzeTools(server: McpServer, cache: PBCache): void {
           }
         }
 
+        // Bug 1 fix: For global function files (.srf), the parser doesn't
+        // populate obj.functions. The function name IS the object name.
+        if (
+          !functionBodyObject &&
+          obj.type === 'function' &&
+          obj.name.toLowerCase() === function_name.toLowerCase()
+        ) {
+          functionBody = lines.join('\n');
+          functionBodyObject = obj.name;
+        }
+
+        // Bug 3 fix: Skip the defining object entirely — it's not a "caller",
+        // it's the definition itself (applies to .srf global functions too).
+        if (functionBodyObject && obj.name.toLowerCase() === functionBodyObject.toLowerCase()) {
+          continue;
+        }
+
         // Search for callers of this function.
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i] ?? '';
+
+          // Bug 2 fix: Skip commented-out lines.
+          const trimmedLine = line.trim();
+          if (trimmedLine.startsWith('//')) continue;
+
           callerPattern.lastIndex = 0;
           if (!callerPattern.test(line)) continue;
 

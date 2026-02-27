@@ -2,9 +2,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { PBCache } from '../cache.js';
+import { parseDwLayout } from '@pb-toolkit/parser';
 
 // ---------------------------------------------------------------------------
 // Python bridge setup
@@ -83,7 +85,7 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
     {
       title: 'Launch PowerBuilder Application',
       description:
-        'Launches a PowerBuilder application .exe for visual testing. Connects to an already-running instance if one exists. Returns the main window title, class, and position.',
+        'Launches a PowerBuilder application .exe for visual testing. Connects to an already-running instance if one exists. Returns the main window title, class, position, and pid.',
       inputSchema: {
         exe_path: z
           .string()
@@ -154,7 +156,15 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
       inputSchema: {
         window_title: z
           .string()
+          .optional()
           .describe('Title (or regex pattern) of the window to capture'),
+        pid: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            'Process ID of the target application. Use this to avoid ambiguity when multiple windows share the same title. Returned by pb_launch_app.',
+          ),
         save_path: z
           .string()
           .optional()
@@ -164,11 +174,12 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ window_title, save_path }) => {
+    async ({ window_title, pid, save_path }) => {
       let result: BridgeResult;
       try {
         result = await callBridge('screenshot', {
-          window_title,
+          ...(window_title !== undefined ? { window_title } : {}),
+          ...(pid !== undefined ? { pid } : {}),
           ...(save_path !== undefined ? { save_path } : {}),
         });
       } catch (err) {
@@ -183,6 +194,23 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
           content: [{ type: 'text' as const, text: toText(result) }],
           isError: true,
         };
+      }
+
+      // Read the saved PNG and return as MCP image content.
+      const pngPath = result['save_path'] as string | undefined;
+      if (pngPath) {
+        try {
+          const pngData = readFileSync(pngPath);
+          const base64Data = pngData.toString('base64');
+          return {
+            content: [
+              { type: 'text' as const, text: toText(result) },
+              { type: 'image' as const, data: base64Data, mimeType: 'image/png' },
+            ],
+          };
+        } catch {
+          // If file read fails, return metadata only.
+        }
       }
 
       return { content: [{ type: 'text' as const, text: toText(result) }] };
@@ -201,7 +229,15 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
       inputSchema: {
         window_title: z
           .string()
+          .optional()
           .describe('Title (or regex pattern) of the target window'),
+        pid: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            'Process ID of the target application. Use this to avoid ambiguity when multiple windows share the same title. Returned by pb_launch_app.',
+          ),
         visible_only: z
           .boolean()
           .optional()
@@ -209,11 +245,12 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ window_title, visible_only = true }) => {
+    async ({ window_title, pid, visible_only = true }) => {
       let result: BridgeResult;
       try {
         result = await callBridge('list_controls', {
-          window_title,
+          ...(window_title !== undefined ? { window_title } : {}),
+          ...(pid !== undefined ? { pid } : {}),
           visible_only,
         });
       } catch (err) {
@@ -235,6 +272,141 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
   );
 
   // -------------------------------------------------------------------------
+  // pb_dw_get_columns
+  // -------------------------------------------------------------------------
+  server.registerTool(
+    'pb_dw_get_columns',
+    {
+      title: 'Get DataWindow Column Layout',
+      description:
+        'Returns the visual layout of a DataWindow\'s detail band: column positions (PBU and optional pixel coordinates), labels, and dimensions. Use this before dw_click_column, dw_set_value, or dw_get_value actions in pb_interact_control.',
+      inputSchema: {
+        dataobject: z
+          .string()
+          .describe('DataWindow object name (e.g. "d_item_update1")'),
+        pid: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            'PID of the running app. When provided with control_handle, pixel coordinates are calculated.',
+          ),
+        control_handle: z
+          .string()
+          .optional()
+          .describe(
+            'Hex handle of the pbdw control (e.g. "0x31092"). Get from pb_list_controls. Used with pid for pixel coordinate calculation.',
+          ),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ dataobject, pid, control_handle }) => {
+      // Find the .srd file in cache.
+      const obj = _cache.getByName(dataobject);
+      if (!obj || obj.type !== 'datawindow') {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ error: `DataWindow '${dataobject}' not found in cache.` }),
+          }],
+          isError: true,
+        };
+      }
+
+      // Read and parse the .srd file.
+      let srdContent: string;
+      try {
+        srdContent = readFileSync(obj.filePath, 'utf-8');
+      } catch {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ error: `Cannot read file: ${obj.filePath}` }),
+          }],
+          isError: true,
+        };
+      }
+
+      const layout = parseDwLayout(srdContent);
+
+      // Calculate the total DW width from the rightmost column.
+      let dwWidth = 0;
+      for (const col of layout.columns) {
+        const right = col.x + col.width;
+        if (right > dwWidth) dwWidth = right;
+      }
+
+      const result: Record<string, unknown> = {
+        dataobject,
+        file: obj.filePath,
+        dw_size_pbu: { width: dwWidth, height: layout.detailHeight },
+        columns: layout.columns.map(c => ({
+          name: c.name,
+          id: c.id,
+          type: c.type,
+          pbu: { x: c.x, y: c.y, w: c.width, h: c.height },
+          tab: c.tabsequence,
+          visible: c.visible,
+          tag: c.tag,
+          edit_limit: c.editLimit,
+          edit_case: c.editCase,
+          dddw: c.dddwName || undefined,
+        })),
+        labels: layout.labels.map(l => ({
+          name: l.name,
+          text: l.text,
+          pbu: { x: l.x, y: l.y, w: l.width, h: l.height },
+        })),
+      };
+
+      // If pid + control_handle provided, get pixel coordinates.
+      if (pid !== undefined && control_handle) {
+        try {
+          const rectResult = await callBridge('get_control_rect', {
+            control_handle,
+          });
+          if (!('error' in rectResult)) {
+            const rect = rectResult['rect'] as { width: number; height: number } | undefined;
+            if (rect && dwWidth > 0) {
+              const pxW = rect.width;
+              const pxH = rect.height;
+              result['control_size_px'] = { width: pxW, height: pxH };
+
+              // PBU-to-pixel scale factor (derived from X axis which is reliable).
+              const xScale = pxW / dwWidth;
+              // Estimated row height in pixels.
+              const rowHeightPx = Math.round(layout.detailHeight * xScale);
+              result['row_height_px'] = rowHeightPx;
+
+              // Add pixel coordinates to each column.
+              // Y is calculated relative to the top of a detail row using
+              // the same scale factor as X — NOT scaled to full control height
+              // (which shows many rows + a header band).
+              const columnsWithPx = (result['columns'] as Array<Record<string, unknown>>).map(col => {
+                const pbu = col['pbu'] as { x: number; y: number; w: number; h: number };
+                return {
+                  ...col,
+                  pixel: {
+                    x: Math.round(pbu.x * xScale),
+                    y: Math.round(pbu.y * xScale),
+                    w: Math.round(pbu.w * xScale),
+                    h: Math.round(pbu.h * xScale),
+                  },
+                };
+              });
+              result['columns'] = columnsWithPx;
+            }
+          }
+        } catch {
+          // Pixel calculation failed — return PBU only.
+        }
+      }
+
+      return { content: [{ type: 'text' as const, text: toText(result) }] };
+    },
+  );
+
+  // -------------------------------------------------------------------------
   // pb_interact_control
   // -------------------------------------------------------------------------
   server.registerTool(
@@ -242,13 +414,21 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
     {
       title: 'Interact with Window Control',
       description:
-        'Interacts with a control inside a running PowerBuilder window. Supported actions: click, set_text, get_text, select. Use pb_list_controls first to identify controls by class name, text, or index.',
+        'Interacts with a control inside a running PowerBuilder window. Supported actions: click, double_click, right_click, set_text, get_text, get_tooltip, select, click_popup_item, dw_click_column, dw_set_value, dw_get_value. Use pb_list_controls first to identify controls by class name, text, or index. For DW actions, first call pb_dw_get_columns to get column layout.',
       inputSchema: {
         window_title: z
           .string()
+          .optional()
           .describe('Title (or regex pattern) of the target window'),
+        pid: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            'Process ID of the target application. Use this to avoid ambiguity when multiple windows share the same title. Returned by pb_launch_app.',
+          ),
         action: z
-          .enum(['click', 'set_text', 'get_text', 'select'])
+          .enum(['click', 'double_click', 'right_click', 'set_text', 'get_text', 'get_tooltip', 'select', 'type_keys', 'click_popup_item', 'dw_click_column', 'dw_set_value', 'dw_get_value'])
           .describe('Action to perform on the control'),
         control_text: z
           .string()
@@ -270,26 +450,68 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
           .string()
           .optional()
           .describe('Value for set_text or select actions'),
+        visible_only: z
+          .boolean()
+          .optional()
+          .describe(
+            'When true (default), only visible controls are considered for index matching. Must match the visible_only used in pb_list_controls.',
+          ),
+        coords: z
+          .object({ x: z.number().int(), y: z.number().int() })
+          .optional()
+          .describe(
+            'Click coordinates relative to the control\'s top-left corner. Use for click, double_click, and right_click to target a specific spot inside the control (e.g. a DataWindow row).',
+          ),
+        control_handle: z
+          .string()
+          .optional()
+          .describe(
+            'Win32 handle in hex (e.g. "0x31092"). When provided, targets the control directly by handle, bypassing class/text/index search. Get handles from pb_list_controls output.',
+          ),
+        column_layout: z
+          .record(z.unknown())
+          .optional()
+          .describe(
+            'DW column layout from pb_dw_get_columns. Required for dw_click_column, dw_set_value, dw_get_value actions.',
+          ),
+        new_value: z
+          .string()
+          .optional()
+          .describe(
+            'Value to set in a DW column. Used with dw_set_value action.',
+          ),
       },
       annotations: { readOnlyHint: false },
     },
     async ({
       window_title,
+      pid,
       action,
       control_text,
       control_class,
       control_index,
       value,
+      visible_only = true,
+      coords,
+      control_handle,
+      column_layout,
+      new_value,
     }) => {
       let result: BridgeResult;
       try {
         result = await callBridge('interact', {
-          window_title,
-          action,
+          ...(window_title !== undefined ? { window_title } : {}),
+          ...(pid !== undefined ? { pid } : {}),
+          control_action: action,
           ...(control_text !== undefined ? { control_text } : {}),
           ...(control_class !== undefined ? { control_class } : {}),
           ...(control_index !== undefined ? { control_index } : {}),
           ...(value !== undefined ? { value } : {}),
+          visible_only,
+          ...(coords !== undefined ? { coords } : {}),
+          ...(control_handle !== undefined ? { control_handle } : {}),
+          ...(column_layout !== undefined ? { column_layout } : {}),
+          ...(new_value !== undefined ? { new_value } : {}),
         });
       } catch (err) {
         return {
@@ -321,7 +543,15 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
       inputSchema: {
         window_title: z
           .string()
+          .optional()
           .describe('Title of the window to capture'),
+        pid: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            'Process ID of the target application. Use this to avoid ambiguity when multiple windows share the same title. Returned by pb_launch_app.',
+          ),
         reference_name: z
           .string()
           .min(1)
@@ -336,14 +566,15 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
       },
       annotations: { readOnlyHint: false },
     },
-    async ({ window_title, reference_name, references_dir }) => {
+    async ({ window_title, pid, reference_name, references_dir }) => {
       const resolvedDir =
         references_dir ?? process.env['PB_REFERENCES_DIR'] ?? './references';
 
       let result: BridgeResult;
       try {
         result = await callBridge('save_reference', {
-          window_title,
+          ...(window_title !== undefined ? { window_title } : {}),
+          ...(pid !== undefined ? { pid } : {}),
           reference_name,
           references_dir: resolvedDir,
         });
@@ -377,7 +608,15 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
       inputSchema: {
         window_title: z
           .string()
+          .optional()
           .describe('Title of the window to compare'),
+        pid: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            'Process ID of the target application. Use this to avoid ambiguity when multiple windows share the same title. Returned by pb_launch_app.',
+          ),
         reference_name: z
           .string()
           .describe('Name of the previously saved reference image'),
@@ -389,6 +628,14 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
           .describe(
             'Per-pixel comparison threshold (0.0 = exact match, 1.0 = very tolerant, default: 0.1)',
           ),
+        max_diff_percent: z
+          .number()
+          .min(0)
+          .max(100)
+          .optional()
+          .describe(
+            'Maximum acceptable difference percentage for pass/fail (default: 1.0). If difference_percent exceeds this, result is "failed".',
+          ),
         references_dir: z
           .string()
           .optional()
@@ -398,16 +645,18 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ window_title, reference_name, threshold = 0.1, references_dir }) => {
+    async ({ window_title, pid, reference_name, threshold = 0.1, max_diff_percent = 1.0, references_dir }) => {
       const resolvedDir =
         references_dir ?? process.env['PB_REFERENCES_DIR'] ?? './references';
 
       let result: BridgeResult;
       try {
         result = await callBridge('visual_compare', {
-          window_title,
+          ...(window_title !== undefined ? { window_title } : {}),
+          ...(pid !== undefined ? { pid } : {}),
           reference_name,
           threshold,
+          max_diff_percent,
           references_dir: resolvedDir,
         });
       } catch (err) {

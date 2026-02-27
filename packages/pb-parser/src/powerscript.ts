@@ -96,7 +96,7 @@ export function parseParams(raw: string): PBParam[] {
  *   5 — parameter list            (may be empty)
  */
 const FUNC_OPEN_RE =
-  /^(?:(public|private|protected)\s+)?(function|subroutine)\s+(?:(\S+)\s+)?(\w+)\s*\(([^)]*)\)/i;
+  /^(?:(public|private|protected|global)\s+)?(function|subroutine)\s+(?:(\S+)\s+)?(\w+)\s*\(([^)]*)\)/i;
 
 const FUNC_END_RE = /^end\s+(function|subroutine)\b/i;
 
@@ -354,4 +354,40 @@ export function parseAncestor(source: string): ParsedAncestor | null {
   }
 
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Menu item parsing
+// ---------------------------------------------------------------------------
+
+export interface PBMenuItem {
+  name: string;
+  parent: string;
+  lineNumber: number;
+}
+
+const MENU_ITEM_RE = /^type\s+(\w+)\s+from\s+menu\s+within\s+(\w+)/i;
+
+/**
+ * Parse menu item declarations from `.srm` source.
+ * Matches lines like: `type m_file from menu within m_main`
+ */
+export function parseMenuItems(source: string): PBMenuItem[] {
+  const lines = toLines(source);
+  const items: PBMenuItem[] = [];
+
+  for (const [lineNum, line] of lines) {
+    const stripped = line.trimStart();
+    const match = MENU_ITEM_RE.exec(stripped);
+    if (match) {
+      const [, name, parent] = match;
+      items.push({
+        name: name ?? '',
+        parent: parent ?? '',
+        lineNumber: lineNum,
+      });
+    }
+  }
+
+  return items;
 }

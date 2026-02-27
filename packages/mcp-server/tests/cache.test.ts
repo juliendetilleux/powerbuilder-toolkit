@@ -278,3 +278,71 @@ describe('PBCache.invalidate()', () => {
     expect(cache.getObjectCount()).toBe(countBefore);
   });
 });
+
+// ---------------------------------------------------------------------------
+// refresh (re-initialize) tests
+// ---------------------------------------------------------------------------
+
+describe('PBCache — refresh (re-initialize)', () => {
+  it('re-indexes after external file addition', async () => {
+    const tmp = await makeTempSolution({
+      'nvo_initial.sru':
+        '$PBExportHeader$nvo_initial.sru\nforward\nglobal type nvo_initial from nonvisualobject\nend type\nend forward\nglobal type nvo_initial from nonvisualobject\nend type\n',
+    });
+
+    try {
+      const cache = new PBCache();
+      await cache.initialize(tmp);
+      expect(cache.getObjectCount()).toBe(1);
+
+      // Simulate external addition.
+      await writeFile(
+        nodePath.join(tmp, 'nvo_added.sru'),
+        '$PBExportHeader$nvo_added.sru\nforward\nglobal type nvo_added from nonvisualobject\nend type\nend forward\nglobal type nvo_added from nonvisualobject\nend type\n',
+        'utf-8',
+      );
+
+      // Cache still shows 1 (stale).
+      expect(cache.getObjectCount()).toBe(1);
+
+      // Re-initialize (what pb_refresh_cache calls).
+      await cache.initialize(tmp);
+
+      // Now shows 2.
+      expect(cache.getObjectCount()).toBe(2);
+      expect(cache.getByName('nvo_added')).toBeDefined();
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('re-indexes after external file deletion', async () => {
+    const tmp = await makeTempSolution({
+      'nvo_a.sru':
+        '$PBExportHeader$nvo_a.sru\nforward\nglobal type nvo_a from nonvisualobject\nend type\nend forward\nglobal type nvo_a from nonvisualobject\nend type\n',
+      'nvo_b.sru':
+        '$PBExportHeader$nvo_b.sru\nforward\nglobal type nvo_b from nonvisualobject\nend type\nend forward\nglobal type nvo_b from nonvisualobject\nend type\n',
+    });
+
+    try {
+      const cache = new PBCache();
+      await cache.initialize(tmp);
+      expect(cache.getObjectCount()).toBe(2);
+
+      // Delete a file externally.
+      await rm(nodePath.join(tmp, 'nvo_b.sru'));
+
+      // Cache still shows 2 (stale).
+      expect(cache.getObjectCount()).toBe(2);
+
+      // Re-initialize.
+      await cache.initialize(tmp);
+
+      // Now shows 1.
+      expect(cache.getObjectCount()).toBe(1);
+      expect(cache.getByName('nvo_b')).toBeUndefined();
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+});

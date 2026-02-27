@@ -72,18 +72,38 @@ export function registerExploreTools(server: McpServer, cache: PBCache): void {
           .describe(
             'Optional filter by type: window | datawindow | userobject | menu | function | structure | application | project | pipeline | query',
           ),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(5000)
+          .optional()
+          .describe('Maximum number of objects to return (default: 100, max: 5000)'),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('Number of objects to skip (default: 0)'),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ object_type }) => {
-      const objects =
+    async ({ object_type, limit = 100, offset = 0 }) => {
+      const allObjects =
         object_type && isValidObjectType(object_type)
           ? cache.getByType(object_type)
           : cache.getAll();
 
+      const total = allObjects.length;
+      const effectiveLimit = Math.min(limit, 5000);
+      const sliced = allObjects.slice(offset, offset + effectiveLimit);
+
       const result = {
-        total: objects.length,
-        objects: objects.map((o) => ({
+        total,
+        limit: effectiveLimit,
+        offset,
+        has_more: offset + effectiveLimit < total,
+        objects: sliced.map((o) => ({
           name: o.name,
           type: o.type,
           library: o.library,
@@ -113,10 +133,14 @@ export function registerExploreTools(server: McpServer, cache: PBCache): void {
         file_path: z
           .string()
           .describe('Relative or absolute path to the .sr* source file'),
+        metadata_only: z
+          .boolean()
+          .optional()
+          .describe('When true, return only metadata without source code (default: false)'),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ file_path }) => {
+    async ({ file_path, metadata_only = false }) => {
       // Resolve to absolute path.
       const solutionPath = cache.getSolutionPath();
       const absolutePath = nodePath.isAbsolute(file_path)
@@ -152,7 +176,7 @@ export function registerExploreTools(server: McpServer, cache: PBCache): void {
       const library = resolveLibraryFromPath(relativePath);
       const lineCount = content.split(/\r?\n/).length;
 
-      const result = {
+      const result: Record<string, unknown> = {
         metadata: {
           name: ancestorInfo?.name ?? nodePath.basename(absolutePath, ext),
           type,
@@ -183,8 +207,10 @@ export function registerExploreTools(server: McpServer, cache: PBCache): void {
             access: v.access,
           })),
         },
-        source: content,
       };
+      if (!metadata_only) {
+        result.source = content;
+      }
 
       return {
         content: [{ type: 'text' as const, text: toText(result) }],
@@ -373,6 +399,53 @@ export function registerExploreTools(server: McpServer, cache: PBCache): void {
 
       return {
         content: [{ type: 'text' as const, text: toText(result) }],
+      };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // pb_refresh_cache
+  // -------------------------------------------------------------------------
+  server.registerTool(
+    'pb_refresh_cache',
+    {
+      title: 'Refresh Object Cache',
+      description:
+        'Re-scans the solution directory and rebuilds the in-memory cache. Use after external file changes (add, delete, rename) to ensure the cache is up-to-date.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    async () => {
+      const solutionPath = cache.getSolutionPath();
+      if (!solutionPath) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({ error: 'No solution path configured. Set PB_SOLUTION_PATH.' }),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const countBefore = cache.getObjectCount();
+      await cache.initialize(solutionPath);
+      const countAfter = cache.getObjectCount();
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: toText({
+              status: 'ok',
+              solution_path: solutionPath,
+              objects_before: countBefore,
+              objects_after: countAfter,
+              delta: countAfter - countBefore,
+            }),
+          },
+        ],
       };
     },
   );

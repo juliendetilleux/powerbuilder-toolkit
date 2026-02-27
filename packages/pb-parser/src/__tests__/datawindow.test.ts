@@ -3,6 +3,7 @@ import {
   parseDataWindowSQL,
   parseDataWindowColumns,
   parseDataWindowArguments,
+  parseDwLayout,
 } from '../datawindow.js';
 
 // ---------------------------------------------------------------------------
@@ -240,5 +241,89 @@ describe('parseDataWindowArguments', () => {
     const args = parseDataWindowArguments(source);
     expect(args).toHaveLength(1);
     expect(args[0]?.name).toBe('id');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseDwLayout
+// ---------------------------------------------------------------------------
+
+const LAYOUT_DW = `
+release 11.5;
+datawindow(units=0 timer_interval=0 color=33156070 processing=0 HTMLDW=no)
+header(height=0 color="536870912")
+summary(height=0 color="536870912")
+footer(height=0 color="536870912")
+detail(height=440 color="536870912")
+table(column=(type=char(20) update=yes name=itcode dbname="items.itcode")
+ column=(type=char(30) update=yes name=itname dbname="items.itname")
+ column=(type=char(60) update=yes name=itdesc2 dbname="items.itdesc2")
+ retrieve="SELECT itcode, itname, itdesc2 FROM items" )
+text(band=detail alignment="1" text="Code" border="0" color="8388608" x="686" y="44" height="64" width="137" name=itcode_t visible="1" )
+column(band=detail id=1 alignment="0" tabsequence=20 border="0" color="8388608" x="841" y="44" height="64" width="855" name=itcode tag="Code article" visible="1" edit.limit=20 edit.case=upper )
+column(band=detail id=2 alignment="0" tabsequence=30 border="0" color="8388608" x="1728" y="44" height="64" width="1152" name=itname tag="Description article" visible="1" edit.limit=30 edit.case=any )
+text(band=detail alignment="1" text="Desc longue" border="0" color="8388608" x="14" y="144" height="64" width="352" name=itdesc2_t visible="1" )
+column(band=detail id=48 alignment="0" tabsequence=40 border="0" color="8388608" x="402" y="144" height="64" width="2473" name=itdesc2 visible="1" edit.limit=60 edit.case=any )
+`;
+
+describe('parseDwLayout', () => {
+  it('extracts detail band height', () => {
+    const layout = parseDwLayout(LAYOUT_DW);
+    expect(layout.detailHeight).toBe(440);
+  });
+
+  it('extracts visual columns from detail band', () => {
+    const layout = parseDwLayout(LAYOUT_DW);
+    expect(layout.columns).toHaveLength(3);
+  });
+
+  it('parses column positions correctly', () => {
+    const layout = parseDwLayout(LAYOUT_DW);
+    const itcode = layout.columns.find(c => c.name === 'itcode');
+    expect(itcode).toBeDefined();
+    expect(itcode!.x).toBe(841);
+    expect(itcode!.y).toBe(44);
+    expect(itcode!.width).toBe(855);
+    expect(itcode!.height).toBe(64);
+    expect(itcode!.id).toBe(1);
+    expect(itcode!.tabsequence).toBe(20);
+    expect(itcode!.visible).toBe(true);
+    expect(itcode!.tag).toBe('Code article');
+    expect(itcode!.editLimit).toBe(20);
+    expect(itcode!.editCase).toBe('upper');
+  });
+
+  it('enriches columns with type from table block', () => {
+    const layout = parseDwLayout(LAYOUT_DW);
+    const itcode = layout.columns.find(c => c.name === 'itcode');
+    expect(itcode!.type).toBe('char(20)');
+    const itname = layout.columns.find(c => c.name === 'itname');
+    expect(itname!.type).toBe('char(30)');
+  });
+
+  it('extracts text labels from detail band', () => {
+    const layout = parseDwLayout(LAYOUT_DW);
+    expect(layout.labels).toHaveLength(2);
+    const codeLabel = layout.labels.find(l => l.name === 'itcode_t');
+    expect(codeLabel).toBeDefined();
+    expect(codeLabel!.text).toBe('Code');
+    expect(codeLabel!.x).toBe(686);
+    expect(codeLabel!.y).toBe(44);
+  });
+
+  it('returns empty layout for source with no detail band', () => {
+    const layout = parseDwLayout('datawindow(units=0)');
+    expect(layout.detailHeight).toBe(0);
+    expect(layout.columns).toHaveLength(0);
+    expect(layout.labels).toHaveLength(0);
+  });
+
+  it('handles tabsequence=32766 as default (hidden columns)', () => {
+    const src = `detail(height=100)
+table(column=(type=long name=hidden_col dbname="hidden_col") retrieve="SELECT 1")
+column(band=detail id=99 tabsequence=32766 x="0" y="0" height="64" width="27" name=hidden_col visible="1" )`;
+    const layout = parseDwLayout(src);
+    expect(layout.columns).toHaveLength(1);
+    expect(layout.columns[0]!.tabsequence).toBe(32766);
   });
 });

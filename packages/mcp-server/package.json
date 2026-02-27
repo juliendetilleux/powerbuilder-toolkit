@@ -7,7 +7,7 @@
     "pb-mcp": "./dist/server.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp src/visual-bridge.py dist/visual-bridge.py",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
     "test": "vitest run",
