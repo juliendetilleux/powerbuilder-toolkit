@@ -1,7 +1,6 @@
 ---
 name: pb-debug
-description: Use when diagnosing bugs, errors, or unexpected behavior in PowerBuilder code. Provides a systematic debugging approach.
-tools: Glob, Grep, Read, Bash, TodoWrite
+description: Use when diagnosing bugs, errors, or unexpected behavior in PowerBuilder code. Provides a systematic debugging approach with structured output.
 ---
 
 # PowerBuilder Debugging Workflow
@@ -44,3 +43,27 @@ tools: Glob, Grep, Read, Bash, TodoWrite
 1. Explain the root cause clearly
 2. Use the pb-modify skill workflow to apply the fix
 3. Compile and verify
+
+## Format de sortie
+
+### Diagnostic : [description du probleme]
+
+#### Symptome
+- Erreur : [message d'erreur ou description du comportement]
+- Contexte : [quand ca se produit]
+- Reproductible : oui/non
+
+#### Cause identifiee
+- Objet : [nom_objet]
+- Localisation : [fonction/event, ligne]
+- Explication : [pourquoi l'erreur se produit]
+
+#### Correction
+- Action : [ce qui a ete fait]
+- Code avant : `[ancien code]`
+- Code apres : `[nouveau code]`
+
+#### Verification
+- [ ] Syntaxe validee (`pb_validate_syntax`)
+- [ ] Compile sans erreur (`pb_compile`)
+- [ ] Comportement corrige (test manuel)

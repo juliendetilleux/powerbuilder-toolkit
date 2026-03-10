@@ -1,116 +1,98 @@
 # powerbuilder-dev — Claude Code Plugin
 
-A Claude Code plugin providing skills, hooks, and a CLAUDE.md generator for PowerBuilder 2025 development.
+Plugin Claude Code pour le developpement PowerBuilder 2025, avec support PMIX ERP (PmiGest).
 
-## Overview
+## Quick Start
 
-This plugin integrates with the `@pb-toolkit/mcp-server` (14 tools) to give Claude structured workflows for reading, modifying, debugging, and creating PowerBuilder source files.
+```bash
+# 1. Ajouter le marketplace
+/marketplace add juliendetilleux/claude-plugins
 
-## Structure
+# 2. Installer le plugin
+/plugin install powerbuilder-dev
 
-```
-claude-plugin/
-├── .claude-plugin/
-│   └── plugin.json          # Plugin metadata
-├── skills/
-│   ├── pb-modify/
-│   │   └── SKILL.md         # Modify PB source — complete 5-step workflow
-│   ├── pb-debug/
-│   │   └── SKILL.md         # Debug PB bugs — systematic diagnosis
-│   ├── pb-analyze/
-│   │   └── SKILL.md         # Analyze architecture, inheritance, dependencies
-│   └── pb-create/
-│       └── SKILL.md         # Create new PB objects with correct conventions
-├── commands/
-│   └── pb-setup.md          # /pb-setup slash command — CLAUDE.md generator
-└── hooks/
-    └── hooks.json           # PostToolUse hook — reminds to compile after .sr* edits
+# 3. Redemarrer Claude Code, puis dans votre projet PB :
+/pb-setup
 ```
 
-## Skills
+## Agents vs Skills — quand utiliser quoi ?
 
-### pb-modify (Priority 1)
+Les **agents** sont des sous-agents autonomes lances en contexte isole pour des analyses lourdes.
+Les **skills** sont des workflows integres dans la conversation pour guider l'action courante.
 
-The main skill. Activates whenever Claude modifies `.srw`, `.srd`, `.sru`, or `.srm` files.
+| Besoin | Utiliser | Type |
+|--------|----------|------|
+| Analyse approfondie d'un objet | `pb-analyst` | Agent |
+| Comprendre un objet rapidement | `pb-analyze` | Skill |
+| Revue de code formelle | `pb-code-reviewer` | Agent |
+| Modifier du code PB | `pb-modify` | Skill |
+| Impact analysis complete | `pb-impact-checker` | Agent |
+| Impact rapide d'une petite modif | `pmix-impact` | Skill |
+| Recherche PMIX approfondie | `pmix-researcher` | Agent |
+| Question PMIX simple | `pmix-navigate` | Skill |
 
-Enforces a 5-step workflow:
-1. Read the target object (pb_read_object)
-2. Check inheritance chain (pb_get_inheritance)
-3. Check dependencies (pb_get_dependencies)
-4. Apply modification (pb_modify_script — creates .bak, verifies uniqueness)
-5. Validate syntax (pb_validate_syntax) then compile (pb_compile)
+**Regle simple** : pour une action rapide → skill. Pour un rapport detaille → agent.
 
-Also documents all PowerScript naming conventions, file structure rules, and the sections that must never be modified (forward, on create, on destroy).
+## Composants
 
-### pb-debug
+### Agents (4)
 
-Systematic debugging workflow:
-- Locate code via pb_search_code and pb_get_call_graph
-- Analyze context via pb_get_inheritance and pb_get_dependencies
-- Common patterns: null reference, SQL errors, event ordering issues
-- Fix using pb-modify skill
+| Agent | Description |
+|-------|-------------|
+| **pb-analyst** | Analyse approfondie d'objets PB — heritage, dependances, call graph |
+| **pb-code-reviewer** | Revue de code — bugs, mauvaises pratiques, conventions PMIX |
+| **pb-impact-checker** | Analyse d'impact avant modification — trace toutes les dependances |
+| **pmix-researcher** | Recherche PMIX — processus metier, tables, flux via RAG |
 
-### pb-analyze
+### Skills (8)
 
-Architecture analysis workflow:
-- pb_get_object_summary for quick overview
-- pb_read_object for full source
-- pb_get_inheritance for hierarchy
-- pb_get_dependencies for usage
-- pb_get_call_graph for function tracing
-- pb_get_project_structure for module layout
+| Skill | Trigger | Description |
+|-------|---------|-------------|
+| **pb-modify** | Toute modification de code PB | Workflow obligatoire en 5 etapes (read → heritage → deps → modify → validate) |
+| **pb-analyze** | Comprendre un objet existant | Vue d'ensemble, heritage, dependances, patterns |
+| **pb-debug** | Bug ou comportement inattendu | Diagnostic systematique avec format de sortie structure |
+| **pb-create** | Creer un nouvel objet PB | Identification ancetre, library, creation, compilation |
+| **pmix-navigate** | Question sur PMIX | Reponse via RAG (recherche hybride FTS5 + semantique) |
+| **pmix-flux** | Processus metier PMIX | Documentation des 12 macro-flux (vente, achat, stock...) |
+| **pmix-impact** | Impact d'une modification | Analyse rapide croisant RAG + dependances PB |
+| **pmix-onboard** | Nouveau projet PMIX | Scan custom, identification client, indexation RAG |
 
-### pb-create
+### Commandes (1)
 
-New object creation workflow:
-- Identify correct ancestor via pb_get_inheritance
-- Identify correct library via pb_get_project_structure
-- Create via pb_create_object (generates proper .sr* template)
-- Verify and compile
+| Commande | Description |
+|----------|-------------|
+| `/pb-setup [path]` | Setup complet : installe le toolkit, analyse le projet, genere CLAUDE.md et .mcp.json |
 
-## Commands
+### Hooks (1)
 
-### /pb-setup [solution-path]
+| Hook | Trigger | Action |
+|------|---------|--------|
+| PostToolUse | Edit/Write sur `.sr*` | Rappel de compilation |
 
-Generates a comprehensive CLAUDE.md for a PowerBuilder project by:
-1. Analyzing project structure (pb_get_project_structure)
-2. Discovering the inheritance tree from ancestor objects
-3. Identifying naming conventions by sampling object names
-4. Reading the .pbproj file for build configuration
+## MCP Tools (21)
 
-The generated CLAUDE.md includes: project overview, architecture, naming conventions, build/deploy commands, development workflow, and key objects.
+Tous les outils proviennent de `@pb-toolkit/mcp-server` :
 
-## Hooks
+**Analyse** : pb_list_objects, pb_read_object, pb_search_code, pb_get_project_structure, pb_get_inheritance, pb_get_dependencies, pb_get_object_summary, pb_get_call_graph, pb_get_datawindow_sql, pb_dw_get_columns
 
-A lightweight PostToolUse hook fires after any Edit or Write tool call. If the modified file matches `.sr[wdumafsjpq]` (any PowerBuilder source extension), it prints a reminder to run `pb_compile` after all modifications are complete.
+**Modification** : pb_modify_script, pb_create_object, pb_validate_syntax, pb_compile, pb_refresh_cache
 
-Heavy validation is deferred to the `pb_validate_syntax` MCP tool, keeping the hook fast and non-blocking.
+**Test visuel** : pb_launch_app, pb_screenshot_window, pb_list_controls, pb_interact_control, pb_save_reference, pb_visual_compare
 
-## MCP Tools Referenced
+**PMIX** : pmix_search, pmix_lookup, pmix_sql, pmix_tables, pmix_describe
 
-The skills reference these tools from `@pb-toolkit/mcp-server`:
+## Pre-requis
 
-| Tool | Used by |
-|------|---------|
-| pb_read_object | pb-modify, pb-debug, pb-analyze |
-| pb_get_inheritance | pb-modify, pb-debug, pb-analyze, pb-create |
-| pb_get_dependencies | pb-modify, pb-debug, pb-analyze |
-| pb_get_object_summary | pb-modify, pb-analyze |
-| pb_search_code | pb-debug |
-| pb_get_call_graph | pb-debug, pb-analyze |
-| pb_get_project_structure | pb-analyze, pb-create, pb-setup |
-| pb_modify_script | pb-modify |
-| pb_create_object | pb-create |
-| pb_validate_syntax | pb-modify |
-| pb_compile | pb-modify, pb-create |
-| pb_list_objects | pb-analyze |
-| pb_launch_app | (visual testing) |
-| pb_screenshot_window | (visual testing) |
+- Claude Code avec support plugins
+- `@pb-toolkit/mcp-server` connecte (fournit les outils pb_* et pmix_*)
+- PowerBuilder 2025 installe
+- Variables d'environnement : `PB_SOLUTION_PATH`, `PB_EXE_PATH`
 
-## Requirements
+## Installation pour un collegue
 
-- Claude Code with plugin support enabled
-- `@pb-toolkit/mcp-server` running and connected (provides all pb_* tools)
-- `PB_SOLUTION_PATH` environment variable set to the PowerBuilder solution root
-- `PB_PROJECT_PATH` set to the .pbproj file path
-- `PB_OUTPUT_EXE` set to the target .exe path
+```bash
+/marketplace add juliendetilleux/claude-plugins
+/plugin install powerbuilder-dev
+# Redemarrer Claude Code
+# Dans le projet PB : /pb-setup
+```

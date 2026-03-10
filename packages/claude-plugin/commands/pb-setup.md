@@ -10,29 +10,46 @@ It handles toolkit installation, project analysis, CLAUDE.md generation, and MCP
 
 ## Step 1: Install PB-Toolkit (if needed)
 
-Check if PB-Toolkit is already installed:
+The toolkit is in the same GitHub repo as this plugin (`juliendetilleux/powerbuilder-toolkit`).
 
-1. Read `~/.claude/pb-toolkit-path.txt` — if it exists and points to a valid `server.js`, skip to Step 2
-2. Check common locations:
-   - `C:/Program Files/PB-Toolkit/packages/mcp-server/dist/server.js`
-   - `C:/Program Files (x86)/PB-Toolkit/packages/mcp-server/dist/server.js`
-   - `~/Claude/Code/powerbuilder-toolkit/packages/mcp-server/dist/server.js`
-3. If not found anywhere, **install it automatically**:
+### 1a. Locate the toolkit
+
+Check these locations in order:
+1. Read `~/.claude/pb-toolkit-path.txt` — if it exists and points to a valid `server.js`, skip to Step 1c
+2. Check: `~/Claude/Code/powerbuilder-toolkit/packages/mcp-server/dist/server.js`
+
+### 1b. Install if not found
 
 ```bash
-# Clone the toolkit
 git clone https://github.com/juliendetilleux/powerbuilder-toolkit.git "$HOME/Claude/Code/powerbuilder-toolkit"
 cd "$HOME/Claude/Code/powerbuilder-toolkit"
 
-# Install dependencies and build
+# Install dependencies
 npm install
-npm run build
+
+# Build in the correct order (parser must be built BEFORE mcp-server)
+cd packages/pb-parser && npm run build
+cd ../mcp-server && npm run build
 ```
 
-4. After install or discovery, save the path:
+Verify the build succeeded: `test -f packages/mcp-server/dist/server.js`
+
+### 1c. Update if already installed (check for RAG tools)
+
+If the toolkit is found but `packages/mcp-server/src/tools/rag.ts` does NOT exist, the toolkit is outdated:
 
 ```bash
-echo "C:/Users/$USER/Claude/Code/powerbuilder-toolkit/packages/mcp-server/dist/server.js" > ~/.claude/pb-toolkit-path.txt
+cd "$HOME/Claude/Code/powerbuilder-toolkit"
+git pull
+npm install
+cd packages/pb-parser && npm run build
+cd ../mcp-server && npm run build
+```
+
+### 1d. Save the toolkit path
+
+```bash
+echo "<toolkit-dir>/packages/mcp-server/dist/server.js" > ~/.claude/pb-toolkit-path.txt
 ```
 
 **IMPORTANT**: Verify the `server.js` file actually exists at the saved path before proceeding.
@@ -45,6 +62,7 @@ Use MCP tools to analyze the PowerBuilder project:
 2. `pb_get_inheritance` on key ancestor objects (w_response, w_main, etc.)
 3. Sample object names across the project to detect naming conventions
 4. Read the `.pbproj` file for build configuration
+5. Detect the PowerBuilder version from the `.pbproj` file — look for `MajorVersion` and `MinorVersion` elements or the `pbVersion` attribute. Common versions: 2019R3 (19.2), 2022 (22.0), 2025 (25.0).
 
 If MCP tools are not yet available (first run before .mcp.json exists), read the `.pbproj` file directly and scan for `.pbl` directories to gather basic info.
 
@@ -64,7 +82,7 @@ Write a comprehensive CLAUDE.md at the project root with these sections:
 
 ### PMIX-specific sections (if PMIX project):
 
-Detect PMIX by checking for libraries: `_sysxtra`, `Cust_Empty`, `_sales`, `_masters`.
+Detect PMIX by checking for libraries. A project is PMIX if it contains at least 2 of these libraries: `_sysxtra`, `Cust_Empty`, `_sales`, `_masters`, `_stock`, `_manufacturing`.
 If PMIX, add these additional sections:
 
 ```markdown
@@ -146,16 +164,68 @@ Detect the project layout:
 
 All paths must use **forward slashes**. Replace all placeholders with actual absolute paths.
 
+## Step 4b: Verify MCP connection (PB tools + RAG tools)
+
+After generating `.mcp.json`, verify that **both** PB tools and RAG tools are operational.
+
+### Test 1: PB tools
+Call `pb_get_project_structure` to verify the PB cache works.
+
+- **If it succeeds**: Log "PB tools OK" and continue to Test 2.
+- **If it fails**: Run diagnostics (see below) and stop.
+
+### Test 2: RAG tools (critical for PMIX projects)
+Call `pmix_search` with query `"architecture PMIX"` (or any simple query).
+
+- **If it succeeds and returns results**: Log "RAG OK — N chunks indexed" and continue to Step 5.
+- **If it succeeds but returns 0 results**: The RAG database is empty. Run `pmix_reindex` to force a full re-indexation, then retry `pmix_search`.
+- **If `pmix_search` is not available as a tool**: The MCP server may not have loaded correctly. See diagnostics below.
+
+### Test 3: Database tools (optional — requires SQL Anywhere)
+Call `pmix_tables` with filter `"purcontract"` (or any known table).
+
+- **If it succeeds**: Log "DB tools OK".
+- **If it fails**: Log "DB tools unavailable (SQL Anywhere non connecte)" — this is normal if no database is running.
+
+### Diagnostics (if any test fails)
+
+1. Check that `node` is installed and accessible (`node --version`).
+2. Verify that the `server.js` path stored in `~/.claude/pb-toolkit-path.txt` actually exists on disk.
+3. Check whether the MCP server process started correctly (look for startup errors in the MCP log).
+4. Ensure all paths in `.mcp.json` use forward slashes and contain no remaining placeholders.
+5. **If only RAG tools fail**: check that `better-sqlite3` native module compiled correctly:
+   ```bash
+   cd <toolkit-dir> && node -e "require('better-sqlite3'); console.log('OK')"
+   ```
+   If this fails, reinstall with: `cd packages/mcp-server && npm rebuild better-sqlite3`
+6. **If tools are registered but RAG returns 0 results**: verify the `docs/` directory exists in the toolkit:
+   ```bash
+   ls <toolkit-dir>/docs/
+   ```
+   Then force reindex: call `pmix_reindex`.
+
 ## Step 5: Final instructions
 
-After generating everything, tell the user:
+After generating everything, present a **status summary** to the user:
 
-1. **Restart Claude Code** to activate the MCP server
-2. After restart, all `pb_*` and `pmix_*` tools will be available
-3. If PMIX project: run `/pmix-onboard` after restart to initialize the RAG for this specific client
+```
+=== PB-SETUP COMPLETE ===
+Toolkit:    ✅ installed at <path>
+CLAUDE.md:  ✅ generated
+.mcp.json:  ✅ generated
+PB tools:   ✅ / ❌ (pb_get_project_structure)
+RAG tools:  ✅ / ❌ (pmix_search — N chunks)
+DB tools:   ✅ / ❌ / ⏭️ skipped
+```
+
+Then tell the user:
+
+1. **If all tests passed**: Everything is ready. If PMIX project: run `/pmix-onboard` to initialize the RAG for this specific client.
+2. **If tests failed because .mcp.json was just created**: **Restart Claude Code** to activate the MCP server, then re-run `/pb-setup` to verify.
+3. **If RAG tools failed after restart**: Follow the diagnostics in Step 4b to fix `better-sqlite3` or re-index the docs.
 
 ## Summary of what pb-setup creates:
 - `~/.claude/pb-toolkit-path.txt` — toolkit location (shared across all projects)
 - `CLAUDE.md` — project documentation for Claude
 - `.mcp.json` — MCP server configuration
-- PB-Toolkit installed at `~/Claude/Code/powerbuilder-toolkit/` (if not already present)
+- Toolkit installed at `~/Claude/Code/powerbuilder-toolkit/` (cloned from same repo as plugin)

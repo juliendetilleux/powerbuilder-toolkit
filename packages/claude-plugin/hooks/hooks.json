@@ -1,17 +1,12 @@
-{
-  "description": "PowerBuilder development hooks — syntax validation after edits to .sr* files",
-  "hooks": {
-    "PostToolUse": [
+[
+  {
+    "type": "PostToolUse",
+    "matcher": "Edit|Write",
+    "hooks": [
       {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node -e \"const p=process.env.TOOL_INPUT_FILE_PATH||''; if(p.match(/\\.sr[wdumafsjpq]$/i)){process.stdout.write('PB file modified: '+p+'\\nRemember to compile with pb_compile after all modifications are done.')}\"",
-            "async": true
-          }
-        ]
+        "command": "node -e \"const f=process.env.TOOL_INPUT_FILE_PATH||''; if(/\\.sr[wdumafsjpq]$/i.test(f)){const n=f.split(/[\\\\/]/).pop(); console.log('\\n⚠ Fichier PowerBuilder modifie: '+n); console.log('  → Valider la syntaxe: pb_validate_syntax(object_name=\\\"'+n.replace(/\\.sr.$/,'')+'\\\")'); console.log('  → Compiler: pb_compile'); console.log('')}\"",
+        "async": true
       }
     ]
   }
-}
+]

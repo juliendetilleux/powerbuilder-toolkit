@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "powerbuilder-toolkit",
+  "description": "Toolkit Claude Code pour PowerBuilder et PMIX ERP — MCP server, RAG, agents et skills",
+  "owner": {
+    "name": "juliendetilleux",
+    "url": "https://github.com/juliendetilleux"
+  },
+  "plugins": [
+    {
+      "name": "powerbuilder-dev",
+      "description": "Plugin pour le developpement PowerBuilder 2025 — agents, skills, hooks",
+      "version": "0.6.0",
+      "author": {
+        "name": "juliendetilleux"
+      },
+      "source": "./packages/claude-plugin",
+      "category": "development"
+    }
+  ]
+}
