@@ -1,0 +1,18 @@
+# pbdom_comment
+
+- **Type**: User Object (Non-visuel)
+- **Ancetre**: pbdom_characterdata
+- **Module**: _fedex
+- **Description**: Objet PBDOM pour le traitement XML
+
+## Variables d'instance
+
+Aucune variable d'instance definie.
+
+## Fonctions publiques
+
+Aucune fonction publique definie.
+
+## Evenements
+
+Aucun evenement personnalise.

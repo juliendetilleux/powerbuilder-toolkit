@@ -1,0 +1,14 @@
+# w_gppo_selection
+
+- **Type**: Window
+- **Ancetre**: w_response
+- **Module**: _masters
+- **Description**: Gppo selection (Donnees de base)
+
+## Evenements surcharges
+
+| Evenement | Description |
+|-----------|-------------|
+| open | Ouverture de la fenetre |
+| clicked | Clic sur la fenetre |
+| doubleclicked | Double-clic sur la fenetre |

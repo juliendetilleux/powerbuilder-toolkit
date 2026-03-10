@@ -65,6 +65,8 @@ export class PBCache {
   private readonly objects: Map<string, PBObject> = new Map();
   private readonly byType: Map<PBObjectType, PBObject[]> = new Map();
   private readonly byName: Map<string, PBObject> = new Map();
+  /** Source content indexed by relative path. Populated at init for fast searches. */
+  private readonly contentCache: Map<string, string> = new Map();
 
   private _initialized = false;
   private _solutionPath = '';
@@ -96,6 +98,7 @@ export class PBCache {
     this.objects.clear();
     this.byType.clear();
     this.byName.clear();
+    this.contentCache.clear();
 
     console.error(`[PBCache] Scanning: ${this._solutionPath}`);
 
@@ -122,6 +125,7 @@ export class PBCache {
 
         const parsedObj = buildObjectFromFile(filePath, this._solutionPath, content);
         this._addToIndexes(parsedObj);
+        this.contentCache.set(parsedObj.relativePath, content);
         processed++;
       } catch {
         // Silently skip corrupt / unreadable files.
@@ -184,6 +188,11 @@ export class PBCache {
     return this.objects.get(normalised);
   }
 
+  /** Get cached source content for an object (avoids re-reading from disk). */
+  getContent(relativePath: string): string | undefined {
+    return this.contentCache.get(relativePath);
+  }
+
   // ---------------------------------------------------------------------------
   // Invalidation (single-file re-index)
   // ---------------------------------------------------------------------------
@@ -199,6 +208,7 @@ export class PBCache {
     const existing = this.objects.get(relativePath);
     if (existing) {
       this._removeFromIndexes(existing);
+      this.contentCache.delete(relativePath);
     }
 
     try {
@@ -207,6 +217,7 @@ export class PBCache {
 
       const obj = buildObjectFromFile(absolutePath, this._solutionPath, content);
       this._addToIndexes(obj);
+      this.contentCache.set(obj.relativePath, content);
     } catch {
       // File deleted or unreadable — removal already handled above.
     }

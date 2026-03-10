@@ -1,0 +1,59 @@
+# d_tractoamont1
+
+- **Type**: DataWindow
+- **Style**: Freeform
+- **Module**: _query
+- **Table principale**: 0
+
+## SQL
+```sql
+  SELECT histostock.hscode,   
+         transactions.trname,   
+         histostock.hsordno,   
+         sum(histostock.hsqty),   
+         histostock.hsum,   
+         transactions.triconnum,   
+         histostock.hslot,   
+         histostock.hsordtyp  ,   
+         min(histostock.hsprgcmnt) histostock_hsprgcmnt,   
+         histostock.hsordlin,
+		(select itlot from items where itcode = hsitem) as itlot,
+		isnull( (select lostatus from lots where locode = histostock.hslot), '' ) as lostatus      
+    FROM histostock,   
+         transactions
+   WHERE ( histostock.hscode = transactions.trcode ) and  
+         ( ( histostock.hscode in ('RCMO','RCPO','RNAM','OPBL','AJST','AJCL','RTMO','RTPO') ) AND  
+         ( histostock.hslot = :ra_lot ) ) and
+			histostock.hsqty <> 0   
+GROUP BY histostock.hscode,   
+         histostock.hsordtyp,   
+         histostock.hsordno,   
+         transactions.triconnum,   
+         transactions.trname,   
+         histostock.hsum,   
+         histostock.hslot,   
+         histostock.hsordlin,
+		hsitem,
+		lostatus           
+ORDER BY histostock.hscode DESC,   
+         histostock.hsordno DESC,   
+         histostock.hslot ASC   
+
+```
+
+## Colonnes
+| Colonne |
+|---------|
+| histostock_hscode |
+| transactions_trname |
+| histostock_hsordno |
+| totqty |
+| histostock_hsum |
+| transactions_triconnum |
+| histostock_hslot |
+| histostock_hsordtyp |
+| chistostock_hsprgcmnt |
+| histostock_hsordlin |
+| itlot |
+| lostatus |
+

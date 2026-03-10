@@ -19,10 +19,7 @@ function toText(value: unknown): string {
 // ---------------------------------------------------------------------------
 
 function makeWindowTemplate(name: string, ancestor: string): string {
-  const timestamp = new Date().toISOString();
   return [
-    `$PBExportHeader$${name}.srw`,
-    `$PBExportComments$Created by PB MCP server on ${timestamp}`,
     `forward`,
     `global type ${name} from ${ancestor}`,
     `end type`,
@@ -45,10 +42,7 @@ function makeWindowTemplate(name: string, ancestor: string): string {
 }
 
 function makeUserObjectTemplate(name: string, ancestor: string): string {
-  const timestamp = new Date().toISOString();
   return [
-    `$PBExportHeader$${name}.sru`,
-    `$PBExportComments$Created by PB MCP server on ${timestamp}`,
     `forward`,
     `global type ${name} from ${ancestor}`,
     `end type`,
@@ -71,10 +65,7 @@ function makeUserObjectTemplate(name: string, ancestor: string): string {
 }
 
 function makeMenuTemplate(name: string, ancestor: string): string {
-  const timestamp = new Date().toISOString();
   return [
-    `$PBExportHeader$${name}.srm`,
-    `$PBExportComments$Created by PB MCP server on ${timestamp}`,
     `forward`,
     `global type ${name} from ${ancestor}`,
     `end type`,
@@ -141,8 +132,14 @@ export function registerModifyTools(server: McpServer, cache: PBCache): void {
         };
       }
 
+      // Normalize line endings in old_text/new_text to match the file.
+      // MCP parameters arrive with LF (\n) but PB source files use CRLF (\r\n).
+      const hasCRLF = content.includes('\r\n');
+      const normalizedOld = hasCRLF ? old_text.replace(/(?<!\r)\n/g, '\r\n') : old_text;
+      const normalizedNew = hasCRLF ? new_text.replace(/(?<!\r)\n/g, '\r\n') : new_text;
+
       // Verify old_text appears exactly once.
-      const occurrences = content.split(old_text).length - 1;
+      const occurrences = content.split(normalizedOld).length - 1;
       if (occurrences === 0) {
         return {
           content: [
@@ -191,7 +188,7 @@ export function registerModifyTools(server: McpServer, cache: PBCache): void {
       }
 
       // Apply replacement and write.
-      const newContent = content.replace(old_text, new_text);
+      const newContent = content.replace(normalizedOld, normalizedNew);
       try {
         await writeFile(absolutePath, newContent, 'utf-8');
       } catch (err) {
@@ -297,13 +294,14 @@ export function registerModifyTools(server: McpServer, cache: PBCache): void {
       }
 
       // Generate template content.
+      // PB source files require a UTF-8 BOM (\uFEFF) at the start.
       let templateContent: string;
       if (type === 'window') {
-        templateContent = makeWindowTemplate(name, ancestor);
+        templateContent = '\uFEFF' + makeWindowTemplate(name, ancestor);
       } else if (type === 'userobject') {
-        templateContent = makeUserObjectTemplate(name, ancestor);
+        templateContent = '\uFEFF' + makeUserObjectTemplate(name, ancestor);
       } else {
-        templateContent = makeMenuTemplate(name, ancestor);
+        templateContent = '\uFEFF' + makeMenuTemplate(name, ancestor);
       }
 
       // Write the file.

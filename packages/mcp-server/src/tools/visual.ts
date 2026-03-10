@@ -336,9 +336,19 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
         if (right > dwWidth) dwWidth = right;
       }
 
+      // Detect processing type from the .srd source.
+      const PROC_TYPES: Record<number, string> = {
+        0: 'freeform', 1: 'tabular', 2: 'grid', 3: 'label',
+        4: 'nup', 5: 'crosstab', 6: 'group', 7: 'composite',
+      };
+      const procMatch = /\bdatawindow\b[^)]*\bprocessing=(\d+)/i.exec(srdContent);
+      const processing = PROC_TYPES[procMatch ? parseInt(procMatch[1]!, 10) : 0] ?? 'freeform';
+      const isFreeform = processing === 'freeform';
+
       const result: Record<string, unknown> = {
         dataobject,
         file: obj.filePath,
+        processing,
         dw_size_pbu: { width: dwWidth, height: layout.detailHeight },
         columns: layout.columns.map(c => ({
           name: c.name,
@@ -372,25 +382,26 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
               const pxH = rect.height;
               result['control_size_px'] = { width: pxW, height: pxH };
 
-              // PBU-to-pixel scale factor (derived from X axis which is reliable).
+              // PBU-to-pixel scale factors.
               const xScale = pxW / dwWidth;
-              // Estimated row height in pixels.
-              const rowHeightPx = Math.round(layout.detailHeight * xScale);
+              // For freeform DWs: Y uses control height / detail height (absolute positioning).
+              // For tabular/grid DWs: Y uses xScale (per-row relative positioning).
+              const yScale = isFreeform && layout.detailHeight > 0
+                ? pxH / layout.detailHeight
+                : xScale;
+              const rowHeightPx = Math.round(layout.detailHeight * (isFreeform ? yScale : xScale));
               result['row_height_px'] = rowHeightPx;
 
               // Add pixel coordinates to each column.
-              // Y is calculated relative to the top of a detail row using
-              // the same scale factor as X — NOT scaled to full control height
-              // (which shows many rows + a header band).
               const columnsWithPx = (result['columns'] as Array<Record<string, unknown>>).map(col => {
                 const pbu = col['pbu'] as { x: number; y: number; w: number; h: number };
                 return {
                   ...col,
                   pixel: {
                     x: Math.round(pbu.x * xScale),
-                    y: Math.round(pbu.y * xScale),
+                    y: Math.round(pbu.y * yScale),
                     w: Math.round(pbu.w * xScale),
-                    h: Math.round(pbu.h * xScale),
+                    h: Math.round(pbu.h * yScale),
                   },
                 };
               });
@@ -414,7 +425,7 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
     {
       title: 'Interact with Window Control',
       description:
-        'Interacts with a control inside a running PowerBuilder window. Supported actions: click, double_click, right_click, set_text, get_text, get_tooltip, select, click_popup_item, dw_click_column, dw_set_value, dw_get_value. Use pb_list_controls first to identify controls by class name, text, or index. For DW actions, first call pb_dw_get_columns to get column layout.',
+        'Interacts with a control inside a running PowerBuilder window. Supported actions: click, double_click, right_click, set_text, get_text, get_tooltip, select, click_popup_item, dw_click_column, dw_tab_to_column, dw_set_value, dw_get_value, dw_click_row. Use pb_list_controls first to identify controls by class name, text, or index. For DW actions, first call pb_dw_get_columns to get column layout. For freeform DWs, prefer use_tab=true which navigates via TAB key order.',
       inputSchema: {
         window_title: z
           .string()
@@ -428,7 +439,7 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
             'Process ID of the target application. Use this to avoid ambiguity when multiple windows share the same title. Returned by pb_launch_app.',
           ),
         action: z
-          .enum(['click', 'double_click', 'right_click', 'set_text', 'get_text', 'get_tooltip', 'select', 'type_keys', 'click_popup_item', 'dw_click_column', 'dw_set_value', 'dw_get_value'])
+          .enum(['click', 'double_click', 'right_click', 'set_text', 'get_text', 'get_tooltip', 'select', 'type_keys', 'click_popup_item', 'dw_click_column', 'dw_tab_to_column', 'dw_set_value', 'dw_get_value', 'dw_click_row'])
           .describe('Action to perform on the control'),
         control_text: z
           .string()
@@ -480,6 +491,34 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
           .describe(
             'Value to set in a DW column. Used with dw_set_value action.',
           ),
+        use_tab: z
+          .boolean()
+          .optional()
+          .describe(
+            'When true, navigate to DW columns using TAB key order instead of pixel clicks. More reliable for freeform DWs. Used with dw_click_column, dw_set_value, dw_get_value.',
+          ),
+        row_index: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            'Row number (1-based) for DW actions. Default is 1. Used with dw_click_column, dw_set_value, dw_get_value, dw_click_row.',
+          ),
+        row_number: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            'Row number for dw_click_row action (1-based). Alias for row_index.',
+          ),
+        double_click: z
+          .boolean()
+          .optional()
+          .describe(
+            'When true with dw_click_row, double-clicks the row instead of single-click.',
+          ),
       },
       annotations: { readOnlyHint: false },
     },
@@ -496,6 +535,10 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
       control_handle,
       column_layout,
       new_value,
+      use_tab,
+      row_index,
+      row_number,
+      double_click,
     }) => {
       let result: BridgeResult;
       try {
@@ -512,6 +555,10 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
           ...(control_handle !== undefined ? { control_handle } : {}),
           ...(column_layout !== undefined ? { column_layout } : {}),
           ...(new_value !== undefined ? { new_value } : {}),
+          ...(use_tab !== undefined ? { use_tab } : {}),
+          ...(row_index !== undefined ? { row_index } : {}),
+          ...(row_number !== undefined ? { row_number } : {}),
+          ...(double_click !== undefined ? { double_click } : {}),
         });
       } catch (err) {
         return {

@@ -2,7 +2,7 @@
 
 Serveur MCP (Model Context Protocol) pour le developpement PowerBuilder 2025.
 
-Expose 14+ outils permettant a Claude Code d'explorer, analyser, modifier, compiler et tester visuellement des applications PowerBuilder.
+Expose 21 outils permettant a Claude Code d'explorer, analyser, modifier, compiler et tester visuellement des applications PowerBuilder.
 
 ## Utilisation standalone
 
@@ -48,11 +48,11 @@ npm run dev
 
 ## Outils exposes
 
-- **Exploration** : `pb_list_objects`, `pb_read_object`, `pb_search_code`, `pb_get_project_structure`
-- **Analyse** : `pb_get_inheritance`, `pb_get_dependencies`, `pb_get_object_summary`, `pb_get_call_graph`
-- **Modification** : `pb_modify_script`, `pb_create_object`
-- **Compilation** : `pb_compile`, `pb_validate_syntax`
-- **Tests visuels** : `pb_launch_app`, `pb_screenshot_window`, `pb_list_controls`, `pb_interact_control`, `pb_save_reference`, `pb_visual_compare`
+- **Exploration** (6) : `pb_list_objects`, `pb_read_object`, `pb_search_code`, `pb_get_project_structure`, `pb_refresh_cache`, `pb_get_datawindow_sql`
+- **Analyse** (4) : `pb_get_inheritance`, `pb_get_dependencies`, `pb_get_object_summary`, `pb_get_call_graph`
+- **Modification** (2) : `pb_modify_script`, `pb_create_object`
+- **Compilation** (2) : `pb_compile`, `pb_validate_syntax`
+- **Tests visuels** (7) : `pb_launch_app`, `pb_screenshot_window`, `pb_list_controls`, `pb_dw_get_columns`, `pb_interact_control`, `pb_save_reference`, `pb_visual_compare`
 
 ## Tests
 
@@ -60,7 +60,7 @@ npm run dev
 npm test
 ```
 
-85 tests unitaires. Les tests visuels (pywinauto) sont skip sur les environnements non-Windows.
+149 tests unitaires (255 au total avec le parser). Les tests visuels (pywinauto) sont skip sur les environnements non-Windows.
 
 ## Licence
 

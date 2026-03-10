@@ -10,6 +10,9 @@ import {
   parseEvents,
   parseInstanceVariables,
   parseAncestor,
+  parseDataWindowSQL,
+  parseDataWindowColumns,
+  parseDataWindowArguments,
 } from '@pb-toolkit/parser';
 import { PBCache } from '../cache.js';
 
@@ -132,7 +135,9 @@ export function registerExploreTools(server: McpServer, cache: PBCache): void {
       inputSchema: {
         file_path: z
           .string()
-          .describe('Relative or absolute path to the .sr* source file'),
+          .describe(
+            'Path to the .sr* source file (relative or absolute), OR a simple object name (e.g. "w_response") which will be resolved via the cache.',
+          ),
         metadata_only: z
           .boolean()
           .optional()
@@ -141,11 +146,32 @@ export function registerExploreTools(server: McpServer, cache: PBCache): void {
       annotations: { readOnlyHint: true },
     },
     async ({ file_path, metadata_only = false }) => {
-      // Resolve to absolute path.
       const solutionPath = cache.getSolutionPath();
-      const absolutePath = nodePath.isAbsolute(file_path)
-        ? file_path
-        : nodePath.join(solutionPath, file_path);
+      let absolutePath: string;
+
+      // If the input looks like a bare object name (no path separators, no .sr extension),
+      // attempt to resolve it via the cache.
+      const looksLikeName = !file_path.includes('/') && !file_path.includes('\\') && !/\.sr[wdumafsjpq]$/i.test(file_path);
+      if (looksLikeName) {
+        const obj = cache.getByName(file_path);
+        if (obj) {
+          absolutePath = obj.filePath;
+        } else {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                error: `Object '${file_path}' not found in cache. Use the full relative path or check the object name.`,
+              }),
+            }],
+            isError: true,
+          };
+        }
+      } else {
+        absolutePath = nodePath.isAbsolute(file_path)
+          ? file_path
+          : nodePath.join(solutionPath, file_path);
+      }
 
       let content: string;
       try {
@@ -292,12 +318,9 @@ export function registerExploreTools(server: McpServer, cache: PBCache): void {
       for (const obj of candidates) {
         if (results.length >= effectiveMax) break;
 
-        let content: string;
-        try {
-          content = await readFile(obj.filePath, { encoding: 'utf-8' });
-        } catch {
-          continue;
-        }
+        const content = cache.getContent(obj.relativePath)
+          ?? await readFile(obj.filePath, { encoding: 'utf-8' }).catch(() => null);
+        if (!content) continue;
 
         const lines = content.split(/\r?\n/);
         // Reset regex lastIndex for each file (important for 'g' flag).
@@ -447,6 +470,152 @@ export function registerExploreTools(server: McpServer, cache: PBCache): void {
           },
         ],
       };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // pb_get_datawindow_sql
+  // -------------------------------------------------------------------------
+  server.registerTool(
+    'pb_get_datawindow_sql',
+    {
+      title: 'Get DataWindow SQL',
+      description:
+        'Extracts the SQL SELECT statement, update properties, arguments, column definitions, and computed fields from a DataWindow source file.',
+      inputSchema: {
+        dataobject: z
+          .string()
+          .describe('DataWindow object name (e.g. "d_items")'),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ dataobject }) => {
+      const obj = cache.getByName(dataobject);
+      if (!obj || obj.type !== 'datawindow') {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: `DataWindow '${dataobject}' not found in cache.`,
+            }),
+          }],
+          isError: true,
+        };
+      }
+
+      let source: string;
+      try {
+        source = await readFile(obj.filePath, { encoding: 'utf-8' });
+      } catch {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ error: `Cannot read file: ${obj.filePath}` }),
+          }],
+          isError: true,
+        };
+      }
+
+      const sql = parseDataWindowSQL(source);
+      const args = parseDataWindowArguments(source);
+      const columns = parseDataWindowColumns(source);
+
+      // Extract processing type: processing=N in datawindow(...) block.
+      const PROCESSING_TYPES: Record<number, string> = {
+        0: 'freeform', 1: 'tabular', 2: 'grid', 3: 'label',
+        4: 'nup', 5: 'crosstab', 6: 'group', 7: 'composite',
+        8: 'richtext', 9: 'ole2', 10: 'treeview',
+      };
+      const procMatch = /\bdatawindow\b[^)]*\bprocessing=(\d+)/i.exec(source);
+      const processingNum = procMatch ? parseInt(procMatch[1]!, 10) : 0;
+      const processing = PROCESSING_TYPES[processingNum] ?? `unknown(${processingNum})`;
+
+      // Extract update properties from table(...) block.
+      const updateMatch = /\bupdate="([^"]+)"/i.exec(source);
+      const updateTable = updateMatch?.[1] ?? null;
+
+      const UPDATE_WHERE: Record<number, string> = {
+        0: 'key_columns', 1: 'key_and_updatable', 2: 'key_and_modified',
+      };
+      const uwMatch = /\bupdatewhere=(\d+)/i.exec(source);
+      const updateWhere = uwMatch
+        ? UPDATE_WHERE[parseInt(uwMatch[1]!, 10)] ?? 'unknown'
+        : null;
+
+      // Extract key columns from table(...) column=(...) blocks.
+      // Uses balanced-paren extraction to handle types like char(20).
+      const keyColNames: string[] = [];
+      const colDefRegex = /\bcolumn\s*=\s*\(/gi;
+      let km: RegExpExecArray | null;
+      while ((km = colDefRegex.exec(source)) !== null) {
+        const parenStart = source.indexOf('(', km.index);
+        if (parenStart === -1) continue;
+        let depth = 0;
+        let end = parenStart;
+        for (let i = parenStart; i < source.length; i++) {
+          if (source[i] === '(') depth++;
+          else if (source[i] === ')') {
+            depth--;
+            if (depth === 0) { end = i; break; }
+          }
+        }
+        const block = source.slice(parenStart + 1, end);
+        if (/\bkey=yes\b/i.test(block)) {
+          const nameMatch = /\bname=(\w+)/i.exec(block);
+          if (nameMatch?.[1]) keyColNames.push(nameMatch[1]);
+        }
+      }
+
+      // Extract computed fields: compute(band=X ... expression="..." ... name=Y ...)
+      const computedFields: Array<{ name: string; expression: string; band: string }> = [];
+      const compRegex = /\bcompute\s*\(\s*band=(\w+)\b/gi;
+      let cm: RegExpExecArray | null;
+      while ((cm = compRegex.exec(source)) !== null) {
+        const band = cm[1] ?? '';
+        // Extract balanced-paren block for this compute.
+        const parenStart = source.indexOf('(', cm.index);
+        if (parenStart === -1) continue;
+        let depth = 0;
+        let end = parenStart;
+        for (let i = parenStart; i < source.length; i++) {
+          if (source[i] === '(') depth++;
+          else if (source[i] === ')') {
+            depth--;
+            if (depth === 0) { end = i; break; }
+          }
+        }
+        const block = source.slice(parenStart + 1, end);
+        const exprMatch = /\bexpression="((?:[^"~]|~.)*)"/i.exec(block);
+        const nameMatch = /\bname=(\w+)/i.exec(block);
+        if (nameMatch?.[1]) {
+          computedFields.push({
+            name: nameMatch[1],
+            expression: exprMatch?.[1]?.replace(/~"/g, '"') ?? '',
+            band,
+          });
+        }
+      }
+
+      const result = {
+        dataobject,
+        file: obj.relativePath,
+        processing,
+        sql: sql ?? null,
+        update_table: updateTable,
+        update_where: updateWhere,
+        key_columns: keyColNames,
+        arguments: args.map(a => ({ name: a.name, type: a.type })),
+        columns: columns.map(c => ({
+          name: c.name,
+          dbName: c.dbName,
+          type: c.type,
+          band: c.band,
+          key: keyColNames.includes(c.name),
+        })),
+        computed_fields: computedFields,
+      };
+
+      return { content: [{ type: 'text' as const, text: toText(result) }] };
     },
   );
 }

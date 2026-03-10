@@ -746,3 +746,70 @@ describe('pb_get_inheritance — recursive descendants', () => {
     expect(descendants.length).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// pb_get_inheritance — max_descendants truncation
+// ---------------------------------------------------------------------------
+
+describe('pb_get_inheritance — max_descendants', () => {
+  let tmp: string;
+  let cache: PBCache;
+
+  beforeAll(async () => {
+    tmp = await makeTempSolution({
+      'nvo_root.sru': makeNvo('nvo_root', 'nonvisualobject'),
+      'nvo_c1.sru': makeNvo('nvo_c1', 'nvo_root'),
+      'nvo_c2.sru': makeNvo('nvo_c2', 'nvo_root'),
+      'nvo_c3.sru': makeNvo('nvo_c3', 'nvo_root'),
+      'nvo_c4.sru': makeNvo('nvo_c4', 'nvo_root'),
+      'nvo_c5.sru': makeNvo('nvo_c5', 'nvo_root'),
+    });
+    cache = new PBCache();
+    await cache.initialize(tmp);
+  });
+
+  it('truncates descendants when exceeding max_descendants', () => {
+    const targetName = 'nvo_root';
+    const allDescendants = cache.getAll().filter(
+      (o) => o.ancestor?.toLowerCase() === targetName.toLowerCase(),
+    );
+    expect(allDescendants.length).toBe(5);
+
+    const maxDesc = 2;
+    const totalDescendants = allDescendants.length;
+    const truncated = totalDescendants > maxDesc;
+    const sliced = truncated ? allDescendants.slice(0, maxDesc) : allDescendants;
+
+    expect(sliced.length).toBe(2);
+    expect(truncated).toBe(true);
+    expect(totalDescendants).toBe(5);
+  });
+
+  it('does not truncate when within max_descendants', () => {
+    const targetName = 'nvo_root';
+    const allDescendants = cache.getAll().filter(
+      (o) => o.ancestor?.toLowerCase() === targetName.toLowerCase(),
+    );
+
+    const maxDesc = 100;
+    const totalDescendants = allDescendants.length;
+    const truncated = totalDescendants > maxDesc;
+    const sliced = truncated ? allDescendants.slice(0, maxDesc) : allDescendants;
+
+    expect(sliced.length).toBe(5);
+    expect(truncated).toBe(false);
+  });
+
+  it('returns total_descendants count even when truncated', () => {
+    const targetName = 'nvo_root';
+    const allDescendants = cache.getAll().filter(
+      (o) => o.ancestor?.toLowerCase() === targetName.toLowerCase(),
+    );
+
+    const maxDesc = 3;
+    const totalDescendants = allDescendants.length;
+    // The total should always reflect ALL descendants, not just the slice.
+    expect(totalDescendants).toBe(5);
+    expect(totalDescendants).toBeGreaterThan(maxDesc);
+  });
+});

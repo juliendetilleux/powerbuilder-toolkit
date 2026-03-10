@@ -3,3 +3,9 @@ dist/
 *.js.map
 .DS_Store
 __tmp__/
+
+# RAG database (auto-generated, ~50MB)
+data/
+*.db
+*.db-shm
+*.db-wal

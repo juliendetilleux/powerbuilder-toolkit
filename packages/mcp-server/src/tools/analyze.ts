@@ -3,6 +3,17 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { PBCache } from '../cache.js';
 
+/** Read content from cache first, fall back to disk. */
+async function readContent(cache: PBCache, obj: { filePath: string; relativePath: string }): Promise<string | null> {
+  const cached = cache.getContent(obj.relativePath);
+  if (cached !== undefined) return cached;
+  try {
+    return await readFile(obj.filePath, { encoding: 'utf-8' });
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -56,10 +67,17 @@ export function registerAnalyzeTools(server: McpServer, cache: PBCache): void {
           .boolean()
           .optional()
           .describe('When true, return all descendants recursively, not just direct children (default: false)'),
+        max_descendants: z
+          .number()
+          .int()
+          .min(1)
+          .max(5000)
+          .optional()
+          .describe('Maximum number of descendants to return (default: 100, max: 5000). Use to limit output for objects with many descendants.'),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ object_name, recursive = false }) => {
+    async ({ object_name, recursive = false, max_descendants = 100 }) => {
       const obj = cache.getByName(object_name);
       if (!obj) {
         return {
@@ -143,6 +161,11 @@ export function registerAnalyzeTools(server: McpServer, cache: PBCache): void {
           }));
       }
 
+      const totalDescendants = descendants.length;
+      const effectiveMax = Math.min(max_descendants, 5000);
+      const truncated = totalDescendants > effectiveMax;
+      const slicedDescendants = truncated ? descendants.slice(0, effectiveMax) : descendants;
+
       const result = {
         object: {
           name: obj.name,
@@ -151,7 +174,9 @@ export function registerAnalyzeTools(server: McpServer, cache: PBCache): void {
           ancestor: obj.ancestor ?? null,
         },
         ancestors,
-        descendants,
+        descendants: slicedDescendants,
+        total_descendants: totalDescendants,
+        truncated,
       };
 
       return {
@@ -199,12 +224,8 @@ export function registerAnalyzeTools(server: McpServer, cache: PBCache): void {
         // Skip the object itself — we want what references it.
         if (obj.name.toLowerCase() === object_name.toLowerCase()) continue;
 
-        let content: string;
-        try {
-          content = await readFile(obj.filePath, { encoding: 'utf-8' });
-        } catch {
-          continue;
-        }
+        const content = await readContent(cache, obj);
+        if (!content) continue;
 
         const lines = content.split(/\r?\n/);
         for (let i = 0; i < lines.length; i++) {
@@ -341,12 +362,8 @@ export function registerAnalyzeTools(server: McpServer, cache: PBCache): void {
       let functionBodyObject = '';
 
       for (const obj of cache.getAll()) {
-        let content: string;
-        try {
-          content = await readFile(obj.filePath, { encoding: 'utf-8' });
-        } catch {
-          continue;
-        }
+        const content = await readContent(cache, obj);
+        if (!content) continue;
 
         const lines = content.split(/\r?\n/);
 
