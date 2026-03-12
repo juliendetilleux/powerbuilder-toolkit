@@ -434,10 +434,16 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
           .describe(
             'Additional raw arguments to pass to PBAutoBuild250.exe (e.g. ["/x", "32", "/rt", "25.0.0.3726", "/pd", "nyyy..."]). These are appended after the default /pbc /d /o flags.',
           ),
+        timeout_ms: z
+          .number()
+          .optional()
+          .describe(
+            'Timeout in milliseconds for PBAutoBuild process. Defaults to 600000 (10 minutes). Large projects (60+ libraries) may need longer.',
+          ),
       },
       annotations: { readOnlyHint: false },
     },
-    async ({ project_path, output_exe, copy_pbds = false, build_args }) => {
+    async ({ project_path, output_exe, copy_pbds = false, build_args, timeout_ms }) => {
       const resolvedProject =
         project_path ?? process.env['PB_PROJECT_PATH'] ?? '';
       const resolvedExe =
@@ -458,25 +464,21 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
         };
       }
 
-      if (!resolvedExe) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                error: 'No output_exe provided and PB_OUTPUT_EXE is not set',
-              }),
-            },
-          ],
-          isError: true,
-        };
+      // Build the arguments array.
+      // PBAutoBuild syntax: pbautobuild250.exe /pbc /d [/o exename] project.pbproj
+      // - The .pbproj file MUST be the last positional argument.
+      // - /o expects a plain filename (e.g. "pmix.exe"), NOT a full path.
+      // - /o is optional — PBAutoBuild defaults to the PBT name when omitted.
+      const args = ['/pbc', '/d'];
+      if (resolvedExe) {
+        // Extract just the filename — PBAutoBuild rejects full paths for /o.
+        args.push('/o', nodePath.basename(resolvedExe));
       }
-
-      // Build the arguments array: base flags + any additional build_args.
-      const args = ['/pbc', '/d', resolvedProject, '/o', resolvedExe];
       if (build_args && build_args.length > 0) {
         args.push(...build_args);
       }
+      // .pbproj must be the last argument.
+      args.push(resolvedProject);
 
       const startTime = Date.now();
       let stdout = '';
@@ -487,7 +489,7 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
         const result = await execFileAsync(
           PB_AUTOBUILD_PATH,
           args,
-          { timeout: 300_000, encoding: 'binary' },
+          { timeout: timeout_ms ?? 600_000, encoding: 'binary' },
         );
         stdout = decodeOutput(result.stdout ?? '');
         stderr = decodeOutput(result.stderr ?? '');
@@ -511,7 +513,10 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
 
       // Copy PBDs if requested and compile succeeded.
       if (copy_pbds && success) {
-        const exeDir = nodePath.dirname(resolvedExe);
+        // Use exe directory if provided, otherwise fall back to project directory.
+        const exeDir = resolvedExe
+          ? nodePath.dirname(resolvedExe)
+          : nodePath.dirname(resolvedProject);
         const projectDir = nodePath.dirname(resolvedProject);
 
         try {
