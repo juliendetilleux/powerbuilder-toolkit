@@ -10,7 +10,7 @@
     {
       "name": "powerbuilder-dev",
       "description": "Plugin pour le developpement PowerBuilder 2025 — agents, skills, hooks",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "author": {
         "name": "juliendetilleux"
       },

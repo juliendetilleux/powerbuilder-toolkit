@@ -1,7 +1,7 @@
 {
   "name": "powerbuilder-dev",
   "description": "Plugin Claude Code pour le developpement PowerBuilder 2025 — agents, skills, hooks et outils specialises",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "author": { "name": "juliendetilleux" },
   "keywords": ["powerbuilder", "pb", "powerscript", "erp", "datawindow", "pmix", "pmigest", "onboard"]
 }
