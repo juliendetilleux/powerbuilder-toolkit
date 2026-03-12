@@ -45,9 +45,11 @@ Pour chaque modification, definir :
 
 ### Etape 3 : Compiler et lancer
 
-1. Compiler le projet : `pb_compile`
+1. Compiler le projet : `pb_compile` (avec `copy_pbds: true` pour copier les PBD vers le repertoire de l'exe)
 2. Verifier qu'il n'y a aucune erreur
-3. Lancer l'application : `pb_launch_app`
+3. Lancer l'application : `pb_launch_app` (copie automatiquement les PBD manquants avant le lancement)
+
+> **Note :** `pb_launch_app` copie automatiquement les PBD disperses vers le repertoire de l'exe (via `copy_pbds: true` par defaut). Cela evite l'erreur R0007 quand les PBD sont dans des sous-dossiers differents. Desactiver avec `copy_pbds: false` si les PBD sont deja en place.
 
 ### Etape 4 : Executer les tests
 

@@ -1,8 +1,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
+import { copyFile } from 'node:fs/promises';
+import { glob } from 'glob';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { PBCache } from '../cache.js';
@@ -100,10 +102,16 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
           .max(30)
           .optional()
           .describe('Seconds to wait for the app window to appear (default: 5)'),
+        copy_pbds: z
+          .boolean()
+          .optional()
+          .describe(
+            'When true (default), copies all .pbd files from the project directory to the exe directory before launching. Prevents R0007 errors when PBDs are scattered across subdirectories.',
+          ),
       },
       annotations: { readOnlyHint: false },
     },
-    async ({ exe_path, wait_seconds = 5 }) => {
+    async ({ exe_path, wait_seconds = 5, copy_pbds = true }) => {
       const resolvedExe = exe_path ?? process.env['PB_EXE_PATH'] ?? '';
 
       if (!resolvedExe) {
@@ -118,6 +126,35 @@ export function registerVisualTools(server: McpServer, _cache: PBCache): void {
           ],
           isError: true,
         };
+      }
+
+      // Copy PBDs to exe directory before launch to prevent R0007 errors.
+      if (copy_pbds) {
+        const projectDir = process.env['PB_SOLUTION_PATH'];
+        const exeDir = dirname(resolvedExe);
+        if (projectDir && existsSync(projectDir)) {
+          try {
+            const pbdFiles = await glob('**/*.pbd', {
+              cwd: projectDir,
+              absolute: true,
+              nodir: true,
+              ignore: ['**/pmix/**', '**/enable/**'],
+            });
+            let copied = 0;
+            for (const pbd of pbdFiles) {
+              const dest = join(exeDir, basename(pbd));
+              if (!existsSync(dest)) {
+                await copyFile(pbd, dest);
+                copied++;
+              }
+            }
+            if (copied > 0) {
+              console.error(`[PB Visual] Copied ${copied} PBD(s) to ${exeDir}`);
+            }
+          } catch {
+            // Non-fatal — try launching anyway.
+          }
+        }
       }
 
       let result: BridgeResult;
