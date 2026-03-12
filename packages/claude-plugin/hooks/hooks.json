@@ -8,5 +8,15 @@
         "async": true
       }
     ]
+  },
+  {
+    "type": "PreToolUse",
+    "matcher": "mcp__powerbuilder__pb_launch_app|mcp__pb-toolkit__pb_launch_app",
+    "hooks": [
+      {
+        "command": "bash -c 'PJ=\"${PB_SOLUTION_PATH:-}\"; EXE=\"${PB_EXE_PATH:-}\"; if [ -n \"$PJ\" ] && [ -n \"$EXE\" ]; then EXE_DIR=$(dirname \"$EXE\"); copied=0; for pbd in $(find \"$PJ\" -name \"*.pbd\" -not -path \"*/pmix/*\" -not -path \"*/enable/*\" 2>/dev/null); do bn=$(basename \"$pbd\"); if [ ! -f \"$EXE_DIR/$bn\" ]; then cp \"$pbd\" \"$EXE_DIR/\" && copied=$((copied+1)); fi; done; if [ $copied -gt 0 ]; then echo \"✓ $copied PBD(s) copies vers $EXE_DIR\"; fi; fi'",
+        "async": false
+      }
+    ]
   }
 ]
