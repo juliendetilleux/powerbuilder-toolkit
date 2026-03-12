@@ -15,6 +15,98 @@ function toText(value: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
+// PowerBuilder $$HEX$$ encoding helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Regex matching PowerBuilder HEX escape sequences.
+ * Format: $$HEXn$$<hex-bytes>$$ENDHEX$$
+ * where n = number of UTF-16LE code units encoded.
+ */
+const HEX_PATTERN = /\$\$HEX\d+\$\$([0-9a-fA-F]+)\$\$ENDHEX\$\$/g;
+
+/**
+ * Decodes all $$HEXn$$...$$ENDHEX$$ sequences in a string to readable Unicode.
+ */
+function decodeHex(raw: string): string {
+  return raw.replace(HEX_PATTERN, (_match, hexBytes: string) => {
+    const buf = Buffer.from(hexBytes, 'hex');
+    return buf.toString('utf16le');
+  });
+}
+
+/**
+ * Encodes non-ASCII characters in a string to PB $$HEX$$ format.
+ * Groups consecutive non-ASCII chars into a single $$HEXn$$ block.
+ */
+function encodeToHex(text: string): string {
+  let result = '';
+  let i = 0;
+  while (i < text.length) {
+    const code = text.charCodeAt(i);
+    if (code > 127) {
+      // Collect consecutive non-ASCII chars.
+      let run = '';
+      const start = i;
+      while (i < text.length && text.charCodeAt(i) > 127) {
+        run += text[i];
+        i++;
+      }
+      const n = i - start;
+      const buf = Buffer.from(run, 'utf16le');
+      result += `$$HEX${n}$$${buf.toString('hex')}$$ENDHEX$$`;
+    } else {
+      result += text[i];
+      i++;
+    }
+  }
+  return result;
+}
+
+/**
+ * Decodes HEX in raw content and builds a character-level offset map.
+ * Returns the decoded string and a mapping array where map[decodedIndex]
+ * gives the { rawStart, rawEnd } in the original string.
+ */
+function decodeHexWithMapping(raw: string): {
+  decoded: string;
+  map: Array<{ rawStart: number; rawEnd: number }>;
+} {
+  const hexRegex = /\$\$HEX\d+\$\$([0-9a-fA-F]+)\$\$ENDHEX\$\$/g;
+  let decoded = '';
+  const map: Array<{ rawStart: number; rawEnd: number }> = [];
+  let lastEnd = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = hexRegex.exec(raw)) !== null) {
+    // Literal text before this HEX block.
+    for (let i = lastEnd; i < match.index; i++) {
+      decoded += raw[i];
+      map.push({ rawStart: i, rawEnd: i + 1 });
+    }
+
+    // Decode the HEX block.
+    const hexBytes = match[1]!;
+    const buf = Buffer.from(hexBytes, 'hex');
+    const chars = buf.toString('utf16le');
+    for (let i = 0; i < chars.length; i++) {
+      decoded += chars[i];
+      map.push({ rawStart: match.index, rawEnd: match.index + match[0].length });
+    }
+
+    lastEnd = match.index + match[0].length;
+  }
+
+  // Remaining literal text.
+  for (let i = lastEnd; i < raw.length; i++) {
+    decoded += raw[i];
+    map.push({ rawStart: i, rawEnd: i + 1 });
+  }
+
+  return { decoded, map };
+}
+
+// ---------------------------------------------------------------------------
 // PB source file templates
 // ---------------------------------------------------------------------------
 
@@ -139,14 +231,54 @@ export function registerModifyTools(server: McpServer, cache: PBCache): void {
       const normalizedNew = hasCRLF ? new_text.replace(/(?<!\r)\n/g, '\r\n') : new_text;
 
       // Verify old_text appears exactly once.
-      const occurrences = content.split(normalizedOld).length - 1;
+      let occurrences = content.split(normalizedOld).length - 1;
+      let hexAwareMatch = false;
+      let rawOldSegment = '';
+      let hexEncodedNew = '';
+
+      if (occurrences === 0 && HEX_PATTERN.test(content)) {
+        // Fallback: HEX-aware matching.
+        // Decode HEX in file content and try to match the readable old_text.
+        const { decoded, map } = decodeHexWithMapping(content);
+        const idx = decoded.indexOf(normalizedOld);
+        if (idx !== -1) {
+          // Check uniqueness in decoded content.
+          const secondIdx = decoded.indexOf(normalizedOld, idx + normalizedOld.length);
+          if (secondIdx !== -1) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: JSON.stringify({
+                    error: `old_text appears multiple times (HEX-decoded match) — must be unique. Provide more surrounding context.`,
+                    file: absolutePath,
+                  }),
+                },
+              ],
+              isError: true,
+            };
+          }
+
+          // Map decoded indices back to raw content range.
+          const rawStart = map[idx]!.rawStart;
+          const lastCharIdx = idx + normalizedOld.length - 1;
+          const rawEnd = map[lastCharIdx]!.rawEnd;
+          rawOldSegment = content.slice(rawStart, rawEnd);
+
+          // Encode non-ASCII chars in new_text to preserve PB HEX format.
+          hexEncodedNew = encodeToHex(normalizedNew);
+          hexAwareMatch = true;
+          occurrences = 1;
+        }
+      }
+
       if (occurrences === 0) {
         return {
           content: [
             {
               type: 'text' as const,
               text: JSON.stringify({
-                error: 'old_text not found in file',
+                error: 'old_text not found in file (also tried HEX-decoded matching)',
                 file: absolutePath,
               }),
             },
@@ -188,7 +320,9 @@ export function registerModifyTools(server: McpServer, cache: PBCache): void {
       }
 
       // Apply replacement and write.
-      const newContent = content.replace(normalizedOld, normalizedNew);
+      const newContent = hexAwareMatch
+        ? content.replace(rawOldSegment, hexEncodedNew)
+        : content.replace(normalizedOld, normalizedNew);
       try {
         await writeFile(absolutePath, newContent, 'utf-8');
       } catch (err) {
@@ -220,6 +354,7 @@ export function registerModifyTools(server: McpServer, cache: PBCache): void {
               file: relativePath,
               backup_path: backupPath,
               replaced: true,
+              hex_aware: hexAwareMatch,
             }),
           },
         ],
@@ -342,3 +477,6 @@ export function registerModifyTools(server: McpServer, cache: PBCache): void {
     },
   );
 }
+
+// Export for testing.
+export { decodeHex, encodeToHex, decodeHexWithMapping };

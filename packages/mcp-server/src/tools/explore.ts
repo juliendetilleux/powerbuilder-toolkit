@@ -37,6 +37,19 @@ function toText(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+/**
+ * Decodes all $$HEXn$$...$$ENDHEX$$ sequences in a string to readable Unicode.
+ */
+function decodeHex(raw: string): string {
+  return raw.replace(
+    /\$\$HEX\d+\$\$([0-9a-fA-F]+)\$\$ENDHEX\$\$/g,
+    (_match, hexBytes: string) => {
+      const buf = Buffer.from(hexBytes, 'hex');
+      return buf.toString('utf16le');
+    },
+  );
+}
+
 function isValidObjectType(value: string): value is PBObjectType {
   const valid: PBObjectType[] = [
     'window',
@@ -131,7 +144,7 @@ export function registerExploreTools(server: McpServer, cache: PBCache): void {
     {
       title: 'Read PowerBuilder Object',
       description:
-        'Reads a PowerBuilder source file and returns its full source code along with parsed metadata (type, ancestor, functions, events, variables).',
+        'Reads a PowerBuilder source file and returns its full source code along with parsed metadata (type, ancestor, functions, events, variables). By default, $$HEX$$ sequences are decoded to readable Unicode. Use raw=true to get the original source with HEX codes intact (useful for pb_modify_script).',
       inputSchema: {
         file_path: z
           .string()
@@ -142,10 +155,14 @@ export function registerExploreTools(server: McpServer, cache: PBCache): void {
           .boolean()
           .optional()
           .describe('When true, return only metadata without source code (default: false)'),
+        raw: z
+          .boolean()
+          .optional()
+          .describe('When true, return source with original $$HEX$$ encoding intact. When false (default), decode HEX sequences to readable Unicode.'),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ file_path, metadata_only = false }) => {
+    async ({ file_path, metadata_only = false, raw = false }) => {
       const solutionPath = cache.getSolutionPath();
       let absolutePath: string;
 
@@ -235,7 +252,7 @@ export function registerExploreTools(server: McpServer, cache: PBCache): void {
         },
       };
       if (!metadata_only) {
-        result.source = content;
+        result.source = raw ? content : decodeHex(content);
       }
 
       return {

@@ -92,4 +92,4 @@ try {
   console.error(`[RAG] Indexation error: ${err}`);
 }
 
-console.error('[PB MCP] Fully initialized (21 PB tools + 5 RAG tools + 3 DB tools)');
+console.error('[PB MCP] Fully initialized (22 PB tools + 5 RAG tools + 3 DB tools)');

@@ -53,6 +53,10 @@
 | confirmation commande | 05-sales-orders.md | docs/flux/sales-order.md |
 | allocation, matallocs | 05-sales-orders.md | docs/database/tables/matallocs.md |
 | --- | --- | --- |
+| caisse, cash, cloture caisse, POS, ticket | 06b-sales-cash.md | docs/knowledge/06b-sales-cash.md |
+| INVCASH, DIRECTSAL, CASHTUCHS | 06b-sales-cash.md | docs/knowledge/06b-sales-cash.md |
+| w_invoice_cash, nvo_invoice_cash | 06b-sales-cash.md | docs/knowledge/06b-sales-cash.md |
+| vente directe, direct sale | 06b-sales-cash.md | docs/knowledge/06b-sales-cash.md |
 | facture, invoice, invoicehead | 06-sales-invoicing.md | docs/database/tables/invoicehead.md |
 | ligne facture, invoiceline | 06-sales-invoicing.md | docs/database/tables/invoiceline.md |
 | TVA, tvalvl | 06-sales-invoicing.md | docs/database/tables/tvalvl.md |

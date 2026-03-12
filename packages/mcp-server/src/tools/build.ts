@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { copyFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -484,6 +485,7 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
       let stdout = '';
       let stderr = '';
       let success = true;
+      let timedOut = false;
 
       try {
         const result = await execFileAsync(
@@ -496,7 +498,17 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
       } catch (err: unknown) {
         success = false;
         if (err && typeof err === 'object') {
-          const execErr = err as { stdout?: string; stderr?: string; message?: string };
+          const execErr = err as {
+            stdout?: string;
+            stderr?: string;
+            message?: string;
+            killed?: boolean;
+            signal?: string;
+          };
+          // Detect timeout: Node kills the process with SIGTERM on timeout.
+          if (execErr.killed || execErr.signal === 'SIGTERM') {
+            timedOut = true;
+          }
           stdout = decodeOutput(execErr.stdout ?? '');
           stderr = decodeOutput(
             execErr.stderr ?? (execErr.message ?? String(err)),
@@ -537,16 +549,25 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
         }
       }
 
+      // Build output: on timeout, include tail of stdout (errors appear at the end).
+      const stdoutLines = stdout.split(/\r?\n/);
+      const stdoutHead = stdout.slice(0, 2000);
+      const stdoutTail = timedOut
+        ? stdoutLines.slice(-50).join('\n')
+        : undefined;
+
       return {
         content: [
           {
             type: 'text' as const,
             text: toText({
               success,
+              timed_out: timedOut,
               duration_ms: duration,
               errors,
               warnings,
-              stdout: stdout.slice(0, 2000),
+              stdout: stdoutHead,
+              ...(stdoutTail ? { stdout_tail: stdoutTail } : {}),
               stderr: stderr.slice(0, 2000),
             }),
           },
@@ -603,6 +624,132 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
           },
         ],
       };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // pb_copy_pbds
+  // -------------------------------------------------------------------------
+  server.registerTool(
+    'pb_copy_pbds',
+    {
+      title: 'Copy PBD Files to EXE Directory',
+      description:
+        'Scans the project directory for all .pbd files and copies them to the exe directory. Useful after manual compilation or when PBDs are scattered across subdirectories.',
+      inputSchema: {
+        source_dir: z
+          .string()
+          .optional()
+          .describe(
+            'Source directory to scan for .pbd files. Defaults to PB_SOLUTION_PATH.',
+          ),
+        target_dir: z
+          .string()
+          .optional()
+          .describe(
+            'Target directory to copy PBDs to. Defaults to the directory of PB_EXE_PATH or PB_OUTPUT_EXE.',
+          ),
+        overwrite: z
+          .boolean()
+          .optional()
+          .describe(
+            'When true, overwrite existing PBDs in the target directory. Default: false (skip existing).',
+          ),
+      },
+      annotations: { readOnlyHint: false },
+    },
+    async ({ source_dir, target_dir, overwrite = false }) => {
+      const resolvedSource =
+        source_dir ?? process.env['PB_SOLUTION_PATH'] ?? '';
+      const resolvedTarget =
+        target_dir ??
+        (process.env['PB_EXE_PATH']
+          ? nodePath.dirname(process.env['PB_EXE_PATH'])
+          : process.env['PB_OUTPUT_EXE']
+            ? nodePath.dirname(process.env['PB_OUTPUT_EXE'])
+            : '');
+
+      if (!resolvedSource) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                error:
+                  'No source_dir provided and PB_SOLUTION_PATH is not set',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      if (!resolvedTarget) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                error:
+                  'No target_dir provided and PB_EXE_PATH / PB_OUTPUT_EXE are not set',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      try {
+        const pbdFiles = await glob('**/*.pbd', {
+          cwd: resolvedSource,
+          absolute: true,
+          nodir: true,
+          ignore: ['**/pmix/**', '**/enable/**'],
+        });
+
+        const copied: string[] = [];
+        const skipped: string[] = [];
+
+        for (const pbd of pbdFiles) {
+          const baseName = nodePath.basename(pbd);
+          const dest = nodePath.join(resolvedTarget, baseName);
+          const exists = existsSync(dest);
+          if (exists && !overwrite) {
+            skipped.push(baseName);
+            continue;
+          }
+          await copyFile(pbd, dest);
+          copied.push(baseName);
+        }
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: toText({
+                status: 'ok',
+                source_dir: resolvedSource,
+                target_dir: resolvedTarget,
+                total_found: pbdFiles.length,
+                copied: copied.length,
+                skipped: skipped.length,
+                copied_files: copied,
+              }),
+            },
+          ],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({ error: `PBD copy failed: ${message}` }),
+            },
+          ],
+          isError: true,
+        };
+      }
     },
   );
 }
