@@ -11,7 +11,8 @@
  */
 
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import * as nodePath from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -104,6 +105,47 @@ async function execSql(
 }
 
 /**
+ * Read the DSN from the pmix.ini file.
+ * Parses DbParm="Connectstring='DSN=xxx'" to extract the DSN name.
+ * Returns null if file not found or DSN not parseable.
+ */
+function readDsnFromPmixIni(): string | null {
+  const solutionPath = process.env['PB_SOLUTION_PATH'];
+  if (!solutionPath) return null;
+
+  // pmix.ini is typically at <solution>/pmix/pmix.ini
+  const iniPath = nodePath.join(solutionPath, 'pmix', 'pmix.ini');
+  if (!existsSync(iniPath)) return null;
+
+  try {
+    const content = readFileSync(iniPath, 'utf-8');
+    // Match DbParm="Connectstring='DSN=Meyers'" or DbParm="ConnectString='DSN=Meyers;...'"
+    const match = content.match(/DbParm\s*=\s*"[^"]*DSN=([^'";,\s]+)/i);
+    if (match?.[1]) {
+      return match[1];
+    }
+  } catch {
+    // File read error — ignore
+  }
+  return null;
+}
+
+/**
+ * Resolve DSN with priority: PMIX_DSN env > pmix.ini > DEFAULT_DSN fallback.
+ */
+function resolveDsn(): string {
+  // 1. Environment variable (highest priority)
+  if (process.env['PMIX_DSN']) return process.env['PMIX_DSN'];
+
+  // 2. Read from pmix.ini
+  const iniDsn = readDsnFromPmixIni();
+  if (iniDsn) return iniDsn;
+
+  // 3. Fallback
+  return DEFAULT_DSN;
+}
+
+/**
  * Parse dbisql tabular output into an array of objects.
  *
  * dbisql outputs:
@@ -181,7 +223,8 @@ function parseDbisqlOutput(output: string): Record<string, string>[] {
 // ---------------------------------------------------------------------------
 
 export function registerDatabaseTools(server: McpServer): void {
-  const dsn = process.env['PMIX_DSN'] ?? DEFAULT_DSN;
+  const dsn = resolveDsn();
+  console.error(`[DB] DSN resolved: ${dsn}`);
 
   // -----------------------------------------------------------------------
   // pmix_sql

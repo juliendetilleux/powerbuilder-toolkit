@@ -178,6 +178,8 @@ Detect the project layout:
 
 `PB_PROJECT_PATH` is the path to the `.pbproj` file. `pb_compile` uses it as the default project path when no `project_path` argument is provided.
 
+**Note on `PMIX_DSN`**: The database tools (`pmix_sql`, `pmix_tables`, `pmix_describe`) auto-detect the DSN from `pmix/pmix.ini` in the solution directory. You only need to add `"PMIX_DSN": "<dsn>"` to the env block if you want to override this (e.g. for a different database instance).
+
 All paths must use **forward slashes**. Replace all placeholders with actual absolute paths.
 
 ## Step 4b: Verify MCP connection (PB tools + RAG tools)
