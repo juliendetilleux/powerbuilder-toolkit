@@ -1,5 +1,14 @@
 [
   {
+    "type": "SessionStart",
+    "hooks": [
+      {
+        "command": "bash -c 'TK=$(cat ~/.claude/pb-toolkit-path.txt 2>/dev/null); if [ -n \"$TK\" ]; then ROOT=$(cd \"$(dirname \"$TK\")/../../..\" && pwd); SCRIPT=\"$ROOT/packages/claude-plugin/hooks/check-toolkit-update.sh\"; if [ -f \"$SCRIPT\" ]; then bash \"$SCRIPT\"; fi; fi'",
+        "async": true
+      }
+    ]
+  },
+  {
     "type": "PreToolUse",
     "matcher": "Edit|Write",
     "hooks": [
