@@ -1,11 +1,11 @@
 [
   {
-    "type": "PostToolUse",
+    "type": "PreToolUse",
     "matcher": "Edit|Write",
     "hooks": [
       {
-        "command": "node -e \"const f=process.env.TOOL_INPUT_FILE_PATH||''; if(/\\.sr[wdumafsjpq]$/i.test(f)){const n=f.split(/[\\\\/]/).pop(); console.log('\\n⚠ Fichier PowerBuilder modifie: '+n); console.log('  → Valider la syntaxe: pb_validate_syntax(object_name=\\\"'+n.replace(/\\.sr.$/,'')+'\\\")'); console.log('  → Compiler: pb_compile'); console.log('')}\"",
-        "async": true
+        "command": "node -e \"const f=process.env.TOOL_INPUT_FILE_PATH||''; if(/\\.sr[wdumafsjpq]$/i.test(f)){const n=f.split(/[\\\\/]/).pop(); console.log('\\n❌ BLOQUE: Modification directe de '+n+' interdite.'); console.log('  Les outils Edit/Write corrompent l\\'encodage PB (BOM, CRLF, tabs).'); console.log('  → Utiliser pb_modify_script(file_path=\\\"...'+n+'\\\", old_text=\\\"...\\\", new_text=\\\"...\\\")'); console.log(''); process.exit(2)}\"",
+        "async": false
       }
     ]
   },

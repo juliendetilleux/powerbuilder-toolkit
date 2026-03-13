@@ -1,4 +1,4 @@
-import { readFile, writeFile, copyFile } from 'node:fs/promises';
+import { readFile, writeFile, copyFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { mkdir } from 'node:fs/promises';
@@ -12,6 +12,67 @@ import { PBCache } from '../cache.js';
 
 function toText(value: unknown): string {
   return JSON.stringify(value, null, 2);
+}
+
+/** BOM UTF-8 prefix. */
+const UTF8_BOM = '\uFEFF';
+
+/**
+ * Synchronizes a modified PB source file to its corresponding .pbl/ subfolder.
+ *
+ * PBAutoBuild /pbc reads from .pbl/ subfolders, not from the library source dirs.
+ * The .pbl/ copy has a different format:
+ *   - Source dir:  starts with `$PBExportHeader$...` line
+ *   - .pbl/ dir:   starts with UTF-8 BOM + `forward` (no $PBExportHeader$)
+ *
+ * Returns the synced path if successful, or null if no .pbl/ counterpart found.
+ */
+async function syncToPblSubfolder(absolutePath: string, content: string): Promise<string | null> {
+  const fileName = nodePath.basename(absolutePath);
+  const parentDir = nodePath.dirname(absolutePath);
+  const parentName = nodePath.basename(parentDir);
+
+  // Look for a .pbl subfolder in the parent directory (e.g. lib_name/lib_name.pbl/)
+  let pblDir: string | null = null;
+  try {
+    const entries = await readdir(parentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && entry.name.endsWith('.pbl')) {
+        pblDir = nodePath.join(parentDir, entry.name);
+        break;
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  if (!pblDir) return null;
+
+  const pblFilePath = nodePath.join(pblDir, fileName);
+  if (!existsSync(pblFilePath)) return null;
+
+  // Convert source format → PBL format:
+  // 1. Remove $PBExportHeader$... line
+  // 2. Ensure UTF-8 BOM prefix
+  let pblContent = content;
+
+  // Strip BOM if present (we'll re-add it)
+  if (pblContent.startsWith(UTF8_BOM)) {
+    pblContent = pblContent.slice(1);
+  }
+
+  // Remove $PBExportHeader$ line (always the first line in source files)
+  pblContent = pblContent.replace(/^\$PBExportHeader\$[^\r\n]*\r?\n/, '');
+
+  // Add BOM
+  pblContent = UTF8_BOM + pblContent;
+
+  try {
+    await writeFile(pblFilePath, pblContent, 'utf-8');
+    return pblFilePath;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +399,9 @@ export function registerModifyTools(server: McpServer, cache: PBCache): void {
         };
       }
 
+      // Sync to .pbl/ subfolder so PBAutoBuild /pbc picks up the change.
+      const syncedPath = await syncToPblSubfolder(absolutePath, newContent);
+
       // Invalidate cache entry.
       await cache.invalidate(absolutePath);
 
@@ -355,6 +419,7 @@ export function registerModifyTools(server: McpServer, cache: PBCache): void {
               backup_path: backupPath,
               replaced: true,
               hex_aware: hexAwareMatch,
+              ...(syncedPath ? { pbl_synced: syncedPath } : {}),
             }),
           },
         ],

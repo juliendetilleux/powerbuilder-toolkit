@@ -34,17 +34,30 @@ cd ../mcp-server && npm run build
 
 Verify the build succeeded: `test -f packages/mcp-server/dist/server.js`
 
-### 1c. Update if already installed (check for RAG tools)
+### 1c. Update if already installed
 
-If the toolkit is found but `packages/mcp-server/src/tools/rag.ts` does NOT exist, the toolkit is outdated:
+Check if the installed toolkit is up-to-date by comparing the local version with the remote:
 
 ```bash
 cd "$HOME/Claude/Code/powerbuilder-toolkit"
-git pull
-npm install
-cd packages/pb-parser && npm run build
-cd ../mcp-server && npm run build
+# Check current local version
+LOCAL_VER=$(node -e "console.log(require('./packages/mcp-server/package.json').version)" 2>/dev/null || echo "0.0.0")
+# Fetch latest without merging
+git fetch origin main --quiet 2>/dev/null
+REMOTE_VER=$(git show origin/main:packages/mcp-server/package.json 2>/dev/null | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).version))" 2>/dev/null || echo "unknown")
 ```
+
+If `LOCAL_VER` < `REMOTE_VER` (or if `git pull` would bring changes), update:
+
+```bash
+cd "$HOME/Claude/Code/powerbuilder-toolkit"
+git stash --quiet 2>/dev/null  # save any local changes
+git pull origin main
+npm install
+npm run build
+```
+
+**Note**: If `git pull` fails due to local changes, use `git stash` first, then retry.
 
 ### 1d. Save the toolkit path
 
@@ -153,6 +166,7 @@ Detect the project layout:
       "args": ["<SERVER_JS_PATH>"],
       "env": {
         "PB_SOLUTION_PATH": "<PROJECT_ROOT>",
+        "PB_PROJECT_PATH": "<PROJECT_ROOT>/<path_to>.pbproj",
         "PB_EXE_PATH": "<PROJECT_ROOT>/<exe_relative_path>",
         "PB_REFERENCES_DIR": "<TOOLKIT_DIR>/references",
         "PYTHON_EXE": "py"
@@ -161,6 +175,8 @@ Detect the project layout:
   }
 }
 ```
+
+`PB_PROJECT_PATH` is the path to the `.pbproj` file. `pb_compile` uses it as the default project path when no `project_path` argument is provided.
 
 All paths must use **forward slashes**. Replace all placeholders with actual absolute paths.
 
@@ -175,11 +191,14 @@ Call `pb_get_project_structure` to verify the PB cache works.
 - **If it fails**: Run diagnostics (see below) and stop.
 
 ### Test 2: RAG tools (critical for PMIX projects)
+
+**IMPORTANT — Deferred tools**: When a MCP server exposes 30+ tools, Claude Code defers loading some of them. The `pmix_*` tools may appear in `<available-deferred-tools>` instead of the active tool list. This is normal, NOT a bug. Use `ToolSearch("select:mcp__powerbuilder__pmix_search")` to load them before calling.
+
 Call `pmix_search` with query `"architecture PMIX"` (or any simple query).
 
 - **If it succeeds and returns results**: Log "RAG OK — N chunks indexed" and continue to Step 5.
 - **If it succeeds but returns 0 results**: The RAG database is empty. Run `pmix_reindex` to force a full re-indexation, then retry `pmix_search`.
-- **If `pmix_search` is not available as a tool**: The MCP server may not have loaded correctly. See diagnostics below.
+- **If `pmix_search` is not available even after ToolSearch**: The MCP server may not have loaded correctly. See diagnostics below.
 
 ### Test 3: Database tools (optional — requires SQL Anywhere)
 Call `pmix_tables` with filter `"purcontract"` (or any known table).

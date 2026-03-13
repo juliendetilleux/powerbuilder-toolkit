@@ -429,11 +429,17 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
           .describe(
             'After compilation, copy all generated .pbd files to the exe directory (default: false).',
           ),
+        deploy: z
+          .boolean()
+          .optional()
+          .describe(
+            'If true, use Deploy mode (/d flag) which produces an executable but only shows generic errors. Default is false (Full Build) which gives detailed error messages (C0081, C0015, etc.). Use deploy=true only for final release builds.',
+          ),
         build_args: z
           .array(z.string())
           .optional()
           .describe(
-            'Additional raw arguments to pass to PBAutoBuild250.exe (e.g. ["/x", "32", "/rt", "25.0.0.3726", "/pd", "nyyy..."]). These are appended after the default /pbc /d /o flags.',
+            'Additional raw arguments to pass to PBAutoBuild250.exe (e.g. ["/x", "32", "/rt", "25.0.0.3726", "/pd", "nyyy..."]). These are appended after the default /pbc /o flags.',
           ),
         timeout_ms: z
           .number()
@@ -444,7 +450,7 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
       },
       annotations: { readOnlyHint: false },
     },
-    async ({ project_path, output_exe, copy_pbds = false, build_args, timeout_ms }) => {
+    async ({ project_path, output_exe, copy_pbds = false, deploy = false, build_args, timeout_ms }) => {
       const resolvedProject =
         project_path ?? process.env['PB_PROJECT_PATH'] ?? '';
       const resolvedExe =
@@ -466,11 +472,15 @@ export function registerBuildTools(server: McpServer, cache: PBCache): void {
       }
 
       // Build the arguments array.
-      // PBAutoBuild syntax: pbautobuild250.exe /pbc /d [/o exename] project.pbproj
+      // PBAutoBuild syntax: pbautobuild250.exe /pbc [/d] [/o exename] project.pbproj
       // - The .pbproj file MUST be the last positional argument.
       // - /o expects a plain filename (e.g. "pmix.exe"), NOT a full path.
       // - /o is optional — PBAutoBuild defaults to the PBT name when omitted.
-      const args = ['/pbc', '/d'];
+      // - /d = Deploy mode (generic errors). Without /d = Full Build (detailed errors).
+      const args = ['/pbc'];
+      if (deploy) {
+        args.push('/d');
+      }
       if (resolvedExe) {
         // Extract just the filename — PBAutoBuild rejects full paths for /o.
         args.push('/o', nodePath.basename(resolvedExe));
